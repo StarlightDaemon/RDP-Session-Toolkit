@@ -94,6 +94,15 @@ Do not attempt to invoke RAIDEN tooling from within this repo.
 All updater operations targeting this Instance are run from the central repo,
 with this repo supplied as the `--instance` or `--target` argument.
 
+RAIDEN's governance is split across two repos: the central framework repo
+(which authors and versions the Edict) and a private ops repo — the fleet
+console — which holds the registry naming every Instance, fleet-wide
+decisions and open loops, and the rollout journal. This Instance's own
+`.raiden/state/` is the system of record for facts local to it; the ops
+repo is the system of record for facts about the fleet as a whole (this
+Instance's registered version, lifecycle status, and registry row). Neither
+repo's tooling runs from inside this Instance — see Fleet Verification below.
+
 ### Installation
 
 RAIDEN Instances are installed by a RAIDEN central agent following
@@ -113,6 +122,17 @@ python3 -m raiden_updater.cli doctor --instance <this-repo-path>
 - `plan` — read-only; exits 0 if apply-safe or already current, exits 1 otherwise
 - `apply` — requires an apply-safe plan; raises `ApplyError` otherwise
 - `doctor` — read-only per-instance structural and freshness verification; writes nothing
+
+### Fleet Verification (ops-side)
+
+This Instance's registry row is periodically checked against reality by a
+**fleet sweep** — `raiden_updater.cli fleet --registry <ops-registry-path>
+[--write]` — run from the central repo against the ops repo's registry. The
+sweep is read-only against every Instance it checks, including this one: it
+never writes here. `--write` regenerates the ops repo's own
+`state/FLEET_STATUS.md`, a generated view (not canon) of fleet-wide version,
+baseline, and doctor status. This Instance is never expected to run the
+sweep itself; findings about it surface to the operator through the ops repo.
 
 ### Edict package location
 
