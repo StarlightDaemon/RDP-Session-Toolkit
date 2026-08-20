@@ -2,7 +2,7 @@
 
 ## Repo Purpose
 
-Companion repo to [Hide RDP Connection Bar](../Hide%20RDP%20Connection%20Bar/README.md),
+Companion repo to [Hide RDP Connection Bar](https://github.com/StarlightDaemon/Hide-RDP-Connection-Bar),
 housing the more complex, personal-use-primarily taskbar-integration work that does not
 belong in the simple-UI-mod trust boundary of that repo. See root `README.md` for the
 full architecture summary.

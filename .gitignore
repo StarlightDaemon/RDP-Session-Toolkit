@@ -46,10 +46,13 @@ out/
 .serena/
 .claude/
 
-# RAIDEN — public-instance audit exclusions
-audit-reports/
+# RAIDEN — public-instance audit exclusions (WORKSPACE_AUDIT_PROTOCOL.md, D-0038)
 .raiden/state/AUDIT_LOG.md
 .raiden/state/last-audit.md
+# Defense-in-depth: not yet specified in WORKSPACE_AUDIT_PROTOCOL.md, but this is
+# the protocol's own canonical audit-report output location and carries the same
+# category of sensitive findings the two exclusions above already protect.
+audit-reports/
 
 # macOS
 ._*
