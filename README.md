@@ -1,4 +1,4 @@
-# Hide RDP Connection Bar with Taskbar Integration
+# RDP Session Toolkit
 
 **Status: nothing in this repository is built yet. Everything described below is
 planned, not implemented.**
