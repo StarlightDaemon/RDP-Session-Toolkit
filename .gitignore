@@ -35,6 +35,10 @@ Release/
 # Build artifacts
 build/
 out/
+dvc-plugin/probe/bin/
+
+# DVC probe runtime log (written next to the plugin EXE at runtime)
+*.log
 
 # Editor
 .vscode/
