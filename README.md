@@ -39,13 +39,13 @@ expanding the trust footprint of the original mod.
 
 `taskbar-integration/client/rdp-session-toolkit-taskbar-client.wh.cpp` is a Windhawk mod that
 runs inside `mstsc.exe` (the Windows Remote Desktop client) on your local machine. It's
-a fork of Hide RDP Connection Bar, extended with a taskbar thumbnail toolbar. Everything
-it does is entirely local to the client machine — it does not talk to the remote session
-host in any way yet.
+a fork of Hide RDP Connection Bar, extended with session controls and a status panel that
+the mod embeds in your own taskbar (from `explorer.exe`). Everything it does is entirely
+local to the client machine — it does not talk to the remote session host in any way yet.
 
 It's implemented and compiles cleanly against the Windhawk toolchain. It has run under
 Windhawk on a real session at least once (the relay-driven minimize was observed
-working), but the thumbnail toolbar, the overlay, and all of the v0.4.0 session controls
+working), but the taskbar-embedded panel, the overlay, and all of the session controls
 below have not had their own live pass yet — treat them as ready to try, not as already
 confirmed working out of the box.
 
@@ -62,27 +62,29 @@ confirmed working out of the box.
 
 ### Usage
 
-Once enabled, an on-screen button appears (corner and offset are configurable in the
-Windhawk mod settings), and the same controls also appear on the taskbar thumbnail when
-you hover the mstsc icon:
+Once enabled, a status panel appears in your own taskbar with all five actions as
+always-visible buttons, each with a tooltip explaining what the click does. An optional
+floating on-screen button (off by default; corner and offset are configurable in the
+Windhawk mod settings) offers Minimize, Restore, and Disconnect on the RDP monitor
+itself. The controls are:
 
 - **Connection status and name display** — the button shows the remote host's name, so
   you can tell at a glance which session it belongs to. It's a passive display, not a
   click target.
 - **Minimize** — sends the fullscreen RDP session down to the taskbar without
   disconnecting it.
-- **Restore** — brings a minimized session back. Works from the same on-screen button
-  (which stays visible while minimized) or from the taskbar thumbnail.
+- **Restore** — brings a minimized session back. Works from the taskbar panel or from
+  the same on-screen button, which stays visible while minimized.
 - **Disconnect** — cleanly closes the RDP session, the same as closing the window
   normally.
 - **Session time and idle time** — a row on the on-screen button (fullscreen sessions)
-  and the tooltip of the status icon on the taskbar thumbnail (all sessions) show how
-  long the session has been open and how long *this computer's* keyboard and mouse have
-  been idle. That is deliberately local idle time, not remote-session activity.
-- **Connection quality** — the thumbnail status icon is colored by the quality level
-  Remote Desktop itself reports (4 levels), with bandwidth and round-trip time in the
-  tooltip. It stays grey until the first report arrives and says so if none can.
-- **Fullscreen / windowed** — one thumbnail button switches the live session between
+  and the tooltip of the taskbar panel's status text (all sessions) show how long the
+  session has been open and how long *this computer's* keyboard and mouse have been
+  idle. That is deliberately local idle time, not remote-session activity.
+- **Connection quality** — the same tooltip carries the quality level Remote Desktop
+  itself reports (4 levels), with bandwidth and round-trip time. It says it is waiting
+  until the first report arrives, and says so plainly if none can come.
+- **Fullscreen / windowed** — one panel button switches the live session between
   fullscreen and windowed without disconnecting, by sending Remote Desktop's own
   Ctrl+Alt+Break shortcut to the session window.
 - **Reconnect** — cleanly disconnects and reopens the same connection in your preferred

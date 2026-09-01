@@ -1,13 +1,20 @@
 # Open Loops
 
-- **LOOP-001 — Live-test the ported client mod (open, operator):** the ported
-  `rdp-session-toolkit-taskbar-client.wh.cpp` v0.2.1 compiles cleanly but has not
-  been loaded under Windhawk. V1's last actual operator live test passed at
-  v1.1.1, before the thumbnail toolbar existed; the toolbar itself was added at
-  v1.1.9 and has never been live-tested. So beyond the fork's rename (new mod id
-  → new settings/storage scope) and the new relay receiver + debug toggle, the
-  ported thumbnail toolbar itself also still needs its first manual pass on a
-  real RDP session.
+- **LOOP-001 — Live-test the ported client mod (open, operator; narrowed
+  2026-09-01):** the ported `rdp-session-toolkit-taskbar-client.wh.cpp` v0.2.1
+  compiles cleanly but has not been loaded under Windhawk. V1's last actual
+  operator live test passed at v1.1.1. Beyond the fork's rename (new mod id →
+  new settings/storage scope) and the relay receiver + debug toggle, the
+  **floating overlay button** still needs its first manual pass on a real RDP
+  session — hide-the-connection-bar, the four rows, drag-and-persist, the
+  hotkey.
+
+  **Narrowed 2026-09-01 (client mod v0.9.0, D-33).** This loop also tracked the
+  **thumbnail toolbar**, which was added upstream at v1.1.9, was never once
+  live-tested here, and has now been **removed** rather than tested — the
+  taskbar-embedded panel already covered the same five actions. That half of
+  this loop is closed by deletion, not by verification, and nothing is owed on
+  it. Everything the toolbar used to present is now LOOP-008's business.
 - **LOOP-002 — Relay sender validation — RESOLVED 2026-08-21 (validation);
   residual: instance targeting still open.** The `CitadelRdpTaskbarRelay`
   receiver now validates every WM_COPYDATA sender: it accepts only this mod's
@@ -33,9 +40,11 @@
   which is the one resolved. See LOOP-006 for the still-untested full feature.
 - **LOOP-004 — Debug self-test path uses an untimed SendMessageW (low
   priority, cosmetic):** `SendRelayTestMinimize` sends its WM_COPYDATA via a
-  plain, untimed `SendMessageW`, unlike the thumb-bar teardown path
-  (`Wh_ModUninit`), which uses `SendMessageTimeoutW`. Worth aligning in a
-  future cleanup pass; not urgent.
+  plain, untimed `SendMessageW`, unlike `Wh_ModUninit`'s frame-thread teardown
+  send, which uses `SendMessageTimeoutW`. (That send was the thumb-bar teardown
+  message until v0.9.0; it is now `g_msgSinkTeardown`, carrying the event
+  sink's Unadvise alone — D-33. The comparison is unchanged.) Worth aligning in
+  a future cleanup pass; not urgent.
 - **LOOP-005 — Live-test the host-side mod (open, operator):**
   `host/rdp-session-toolkit-taskbar-host.wh.cpp` v0.2.0 compiles cleanly but
   has never been loaded under Windhawk. Needs its first manual pass on a real
@@ -109,6 +118,30 @@
   return with it on; (f) with it on, start mstsc on a temp `.rdp`, delete the
   file, click Reconnect — expect `NOT launched: the connection file … no longer
   exists at launch time` and no replacement client.
+
+  **Update 2026-09-01 (client mod v0.9.0, D-33) — still open, re-scoped again.**
+  The thumbnail toolbar is removed, so every sub-item that named it now applies
+  to the **taskbar-embedded panel** instead; none of the underlying mechanisms
+  changed, and none of the uncertainties are resolved by the removal:
+  - (a) connection quality is unaffected — the sink, the two creation-path
+    hooks, and all the `RdpEvents:` diagnostics are untouched. What changed is
+    only where a report is *shown*: the panel's status text and its tooltip,
+    not a thumb-bar icon colour. Watch the same log lines.
+  - (b) the fullscreen toggle is now driven exclusively from the panel, i.e.
+    from an explorer.exe click with `AllowSetForegroundWindow` (D-27) — the
+    thumbnail-button click path this item also covered no longer exists, so
+    this is now a single path to verify rather than two.
+  - (e) Reconnect-is-opt-in now means one button to watch (the panel's) plus
+    the alert's Force reconnect, not two buttons plus the alert.
+  - New: `showFullscreenToggle` now collapses the panel's fullscreen button
+    (it used to hide a thumb-bar slot) — confirm it disappears with the setting
+    off and returns with it on, exactly like Reconnect.
+  - New: confirm `Wh_ModUninit` still tears the event sink down cleanly now
+    that it travels under its own message (`WH_RdpstkClient_SinkTeardown`,
+    D-33) rather than riding along with the thumb-bar teardown. Disable the mod
+    while a session is open and look for `RdpEvents: unadvised (mod unload)`;
+    then close a session with the mod loaded and look for `RdpEvents:
+    unadvised (frame WM_DESTROY)`. Both paths must still log.
 - **LOOP-008 — Live-test the taskbar-embedded client widget (open, operator):**
   `client-embedded/rdp-session-toolkit-taskbar-client-embedded.wh.cpp` v0.1.0
   and the client mod's v0.5.0 additions (status snapshot,
@@ -159,6 +192,35 @@
   look. All other sub-steps (b)–(g) carry over unchanged. The settings keys the
   widget reads are renamed to the `embedded…` group (D-26); confirm the panel
   still honors position/width/font/offset/show-when-no-session after the merge.
+
+  **Update 2026-09-01 (client mod v0.9.0, D-33) — still open, widened.** The
+  thumbnail toolbar is removed and the panel is now the toolkit's only
+  full-featured client surface, so this loop is the one that matters most. Two
+  new things to check on top of everything above, both purely presentational
+  (no channel or state change is involved):
+  - **The migrated status tooltip.** Hover the panel's host-name / status text
+    with a session open. Expect up to three lines, rebuilt on this side from
+    the status snapshot rather than read from mstsc: `Session <coarse> · this
+    PC idle <coarse>` (with *Show session duration and idle time* on),
+    `Quality n/4 (label) · bandwidth … · rtt … ms` (with *Show connection
+    quality* on), and, while the watchdog reports a hang, `NOT RESPONDING for
+    N s …`. The quality line must say `waiting for Remote Desktop's first
+    report` — never a fabricated level — until a real `RdpEvents: network
+    status` line appears in the mstsc log; it is the same honesty rule as D-16,
+    now enforced on the reader side. Turn each of the two settings off and
+    confirm the corresponding line disappears. With **no** session, the tooltip
+    must explain itself rather than go blank: "no session", "last update N s
+    ago", or "no mstsc.exe running this mod", depending on what is actually
+    true. Cross-check the numbers against the mstsc-side log so the reader is
+    not quietly showing stale or mis-scaled values.
+  - **The five action tooltips.** Hover each button and confirm a short
+    plain-language description appears, and specifically that the fullscreen
+    one flips wording with the session's real state (it is rewritten alongside
+    the label and the glyph on every poll) — a tooltip describing the wrong
+    direction would be worse than none.
+  Also worth one look: `showFullscreenToggle` off should remove the fullscreen
+  button from the row entirely (`Visibility::Collapsed`), the same way
+  `enableReconnect` off removes Reconnect — not merely dim it.
 
 ### LOOP-SWEEP-20260831-001 — RDP Session Toolkit doctor WARN — state_unrecognized
 

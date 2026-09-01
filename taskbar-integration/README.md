@@ -4,9 +4,12 @@ The Windhawk-mod side of the toolkit. Holds two mod source files in sibling
 subfolders — one per side of the RDP connection:
 
 - [`client/`](client/) — the client-side mod. As of **v0.6.0** it targets two
-  processes on the client machine: `mstsc.exe` (the overlay + thumbnail toolbar)
-  and `explorer.exe` (the taskbar-embedded panel, formerly a separate
-  `client-embedded/` mod, folded in per D-26). Built, live-test pending.
+  processes on the client machine: `mstsc.exe` (the optional floating overlay,
+  the watchdog, and the status/command plumbing) and `explorer.exe` (the
+  taskbar-embedded panel, formerly a separate `client-embedded/` mod, folded in
+  per D-26). As of **v0.9.0** the panel is the mod's primary surface: the
+  mstsc-side taskbar **thumbnail toolbar** was removed as a duplicate of it
+  (D-33). Built, live-test pending.
 - [`host/`](host/) — the host-side (remote) mod, in the host's `explorer.exe` (built, live-test pending)
 
 ## Contents
@@ -19,14 +22,15 @@ subfolders — one per side of the RDP connection:
    extended with a toolkit relay receiver. It provides:
    - everything the original mod does (connection-bar hiding, overlay
      disconnect button, hostname display, hotkey, drag-to-reposition);
-   - a taskbar **thumbnail toolbar** on the mstsc taskbar button with
-     Minimize / Restore / Fullscreen-toggle / Reconnect / Disconnect icon
-     buttons (Segoe MDL2 system-font glyphs rendered at runtime — no custom
-     icon assets), with enabled/disabled icon state and tooltips tracking the
-     session window, plus a leftmost **status icon** whose tooltip carries the
-     session clock and this PC's input idle time and whose color follows the
-     connection quality Remote Desktop reports (see D-15/D-16 in
-     [`DECISIONS.md`](../.raiden/state/DECISIONS.md));
+   - the session status the taskbar-embedded panel displays — session clock,
+     this PC's input idle time, and the connection quality Remote Desktop
+     reports (a second `IMsTscAxEvents` sink; see D-15/D-16 in
+     [`DECISIONS.md`](../.raiden/state/DECISIONS.md)) — published once a second
+     into the status snapshot the panel reads. *(Through v0.8.0 this branch
+     also drew a taskbar **thumbnail toolbar** carrying the same five actions
+     and a status icon. It was removed at v0.9.0 as a second copy of the
+     panel's UI; the status icon's rich tooltip was rebuilt on the panel's own
+     status text — D-33.)*
    - v0.4.0 session controls: **fullscreen/windowed toggle** (sends Remote
      Desktop's own Ctrl+Alt+Break to the session window, D-14), **reconnect**
      with a settings-backed preferred display mode (`/f`, `/w:`+`/h:`, or
@@ -72,7 +76,10 @@ subfolders — one per side of the RDP connection:
    duration and connection quality (or an honest "quality n/a" /
    "not responding" line), and five directly-clickable buttons —
    Minimize / Restore / Switch-to-fullscreen-or-windowed / Reconnect /
-   Disconnect — with the thumbnail toolbar's enable/disable/relabel rules. It
+   Disconnect — each with a plain-language tooltip, and each enabled, disabled
+   or relabelled from the session's real state. Hovering the status text shows
+   the full detail: session duration, this PC's idle time, quality with
+   bandwidth and round-trip time, and the not-responding warning (D-33). It
    acts only through the mstsc.exe branch:
    - **Status channel** (D-22): the mstsc.exe branch writes
      `local-widget-status.dat` to the mod's Windhawk storage directory about
@@ -87,9 +94,10 @@ subfolders — one per side of the RDP connection:
      `BCryptGenRandom` by whichever branch starts first). Without the exact
      secret a command is ignored. `CitadelRdpTaskbarRelay` is not involved (D-24).
 
-   To use only the taskbar panel, keep the mod enabled, turn its *Show
-   disconnect button* off, and keep *Detect stuck sessions* on (with the
-   overlay off, the watchdog tick is what publishes the status).
+   To use only the taskbar panel, keep the mod enabled, leave *Show floating
+   overlay button* off, and keep *Detect stuck sessions* on (with the overlay
+   off, the watchdog tick is what publishes the status). Since v0.9.0 that is
+   also the default shape — there is no third surface to turn off.
 
 ## Relay receiver protocol (stub)
 
@@ -98,9 +106,10 @@ subfolders — one per side of the RDP connection:
   `FindWindowEx(HWND_MESSAGE, NULL, L"CitadelRdpTaskbarRelay", NULL)`.
 - Message: `WM_COPYDATA`. The first payload byte is the command; further bytes
   are reserved for future command-specific arguments and ignored today.
-- Commands: `0x01` = minimize the RDP session window (same action as the
-  thumbnail-toolbar Minimize button). `0x00` is permanently unassigned. More
-  commands will be added without changing the window or class setup.
+- Commands: `0x01` = minimize the RDP session window (the same shared
+  `MinimizeRdpFrame` action every other surface uses). `0x00` is permanently
+  unassigned. More commands will be added without changing the window or class
+  setup.
 - The receiver logs the sending process ID. **Sender validation is deliberately
   deferred** until the DVC relay plugin exists with a known, stable identity —
   see the marked TODO in the source and D-5 in
@@ -135,8 +144,9 @@ real and stays (D-2): those run on different machines and share no code path, so
 they are separate mods that communicate over the RDP Dynamic Virtual Channel.
 The two **client-side** presentations, by contrast, are two ends of the same
 same-machine feature, so they are **one mod with two `@include` targets** — the
-client mod is injected into both `mstsc.exe` (overlay + thumbnail toolbar,
-status writer, command receiver) and the client machine's own `explorer.exe`
+client mod is injected into both `mstsc.exe` (optional floating overlay,
+watchdog, status writer, command receiver) and the client machine's own
+`explorer.exe`
 (the taskbar-embedded panel, status reader, command sender). A single Windhawk
 mod file *can* target more than one process; `Wh_ModInit` detects which one it
 is in and runs only that branch. They coordinate over a local status file plus a

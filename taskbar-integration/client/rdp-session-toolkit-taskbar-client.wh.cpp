@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              rdp-session-toolkit-taskbar-client
 // @name            RDP Session Toolkit — Taskbar Client
-// @description     A taskbar companion for Remote Desktop sessions: quick buttons for minimize, restore, switching between fullscreen and windowed, reconnecting, and disconnecting, plus a status icon showing session time, connection quality, and a warning if the session stops responding. Also removes the floating connection bar that Windows shows during fullscreen sessions.
-// @version         0.8.0
+// @description     A taskbar companion for Remote Desktop sessions: a panel in your own taskbar with buttons for minimize, restore, switching between fullscreen and windowed, reconnecting, and disconnecting, plus a status line whose tooltip shows session time, idle time, connection quality, and a warning if the session stops responding. Also removes the floating connection bar that Windows shows during fullscreen sessions.
+// @version         0.9.0
 // @author          StarlightDaemon
 // @github          https://github.com/StarlightDaemon
 // @include         mstsc.exe
@@ -39,8 +39,8 @@
 The client-side taskbar-integration component of the **RDP Session Toolkit**.
 One mod that targets **two processes on the client machine**:
 
-- **`mstsc.exe`** — the floating overlay, the taskbar-thumbnail toolbar, the
-  stuck-session watchdog, the relay receiver, and the status writer / local
+- **`mstsc.exe`** — the floating overlay, the stuck-session watchdog, the
+  connection-quality sink, the relay receiver, and the status writer / local
   command receiver (everything described below).
 - **`explorer.exe`** — a wide, always-visible RDP status panel embedded in the
   client machine's own taskbar (the "Taskbar-embedded panel" section near the
@@ -48,11 +48,28 @@ One mod that targets **two processes on the client machine**:
   (`rdp-session-toolkit-taskbar-client-embedded`); as of v0.6.0 it is this same
   mod's `explorer.exe` branch.
 
-Enable the mod once and Windhawk injects the right branch into each process. To
-use only the taskbar-embedded panel and neither mstsc-side surface, turn both
-*Show taskbar thumbnail toolbar* and *Show floating overlay button* off (and
-keep *Detect stuck sessions* on, so the status snapshot keeps being written —
-see that setting).
+Enable the mod once and Windhawk injects the right branch into each process.
+
+There are **two presentation surfaces**, and they are independent:
+
+1. the **taskbar-embedded panel** in your own taskbar (`explorer.exe`), which
+   is the main one and is always available;
+2. the **floating overlay button** on the RDP monitor (`mstsc.exe`), off by
+   default.
+
+To use only the taskbar-embedded panel, simply leave *Show floating overlay
+button* off (and keep *Detect stuck sessions* on, so the status snapshot keeps
+being written — see that setting).
+
+> **Changed in v0.9.0.** A third surface, the **taskbar thumbnail toolbar**
+> (buttons under the mstsc taskbar hover preview), has been removed. The
+> taskbar-embedded panel offers the same five actions with the same rules,
+> always visible instead of hover-only, so the toolbar was a second copy of
+> the same UI to keep in sync. Its rich status tooltip was not lost — it moved
+> to the panel's own status text (hover it). The *Show taskbar thumbnail
+> toolbar* setting is gone; *Show connection quality*, *Show session duration
+> and idle time*, and *Fullscreen / windowed toggle button* now apply to the
+> panel.
 
 Ported from the standalone
 [Hide RDP Connection Bar](https://github.com/StarlightDaemon/Hide-RDP-Connection-Bar)
@@ -64,10 +81,9 @@ interoperate with it.
 Hides the floating Remote Desktop connection bar in fullscreen sessions on
 Windows 11, where the native options to hide the bar may not persist reliably.
 
-Offers two independent mstsc-side control surfaces — a **taskbar thumbnail
-toolbar** (on by default, *Show taskbar thumbnail toolbar*) and a **floating
-overlay button** (off by default, *Show floating overlay button*). Either,
-both, or neither may be enabled.
+Offers one optional mstsc-side control surface — a **floating overlay button**
+(off by default, *Show floating overlay button*) — alongside the always-present
+taskbar-embedded panel described further below.
 
 The floating overlay button (when enabled) is pinned to any corner of the
 screen:
@@ -88,32 +104,28 @@ screen:
   reconnects; changing the position settings in the Windhawk UI resets it
   back to the configured default
 
-The same Minimize, Restore, and Disconnect controls also appear as buttons
-under the taskbar thumbnail preview — hover the mstsc taskbar icon to use
-them. They work for both fullscreen and windowed sessions, track the
-window's minimized state, and survive an explorer.exe restart. This thumbnail
-toolbar is governed by its own "Show taskbar thumbnail toolbar" setting —
-independent of the floating overlay button — and carries these additional
-controls:
+Two further actions have no overlay row of their own and are offered on the
+taskbar-embedded panel, driven from this branch:
 
-- **Status icon** (leftmost, not a button): its tooltip shows how long the
-  session has been open and how long this computer's own keyboard and mouse
-  have been idle (local input idle — not remote-session activity). With
-  "Show connection quality" on, the icon is colored by the quality level
-  Remote Desktop itself reports (green → red, 4 levels), with bandwidth and
-  round-trip time in the tooltip; it stays grey until the first report
-  arrives and says so if none can come. It turns into a red warning while
-  the session window is not responding.
-- **Fullscreen / windowed toggle**: switches the live session between
-  fullscreen and windowed without disconnecting, by sending Remote
-  Desktop's own Ctrl+Alt+Break toggle to the session window — nothing else
-  is reimplemented. If the session window cannot be brought to the
-  foreground, nothing is sent.
-- **Reconnect**: cleanly disconnects (same path as Disconnect) and reopens
-  the same connection — same target, same `.rdp` file or switches — in the
-  preferred display mode from the settings: fullscreen (`/f`), windowed
-  (`/w:` `/h:`, at a fixed size or the session's current size), or all
-  monitors (`/multimon`).
+- **Fullscreen / windowed toggle** (*Fullscreen / windowed toggle button*):
+  switches the live session between fullscreen and windowed without
+  disconnecting, by sending Remote Desktop's own Ctrl+Alt+Break toggle to the
+  session window — nothing else is reimplemented. If the session window
+  cannot be brought to the foreground, nothing is sent.
+- **Reconnect** (*Enable Reconnect and Force reconnect*, off by default):
+  cleanly disconnects (same path as Disconnect) and reopens the same
+  connection — same target, same `.rdp` file or switches — in the preferred
+  display mode from the settings: fullscreen (`/f`), windowed (`/w:` `/h:`, at
+  a fixed size or the session's current size), or all monitors
+  (`/multimon`).
+
+This branch also measures and publishes the session status the panel displays:
+how long the session has been open, how long this computer's own keyboard and
+mouse have been idle (local input idle — not remote-session activity), the
+connection quality level Remote Desktop itself reports (4 levels) with its
+bandwidth and round-trip time, and whether the session window has stopped
+responding. Nothing is invented — until Remote Desktop makes its first quality
+report the panel's tooltip says exactly that.
 
 ## Stuck-session alert
 
@@ -139,18 +151,18 @@ toolkit component installed.
 ## Taskbar-embedded widget channel
 
 A second, separate message-only window (class `CitadelRdpTaskbarLocalWidget`)
-serves the toolkit's taskbar-embedded client widget (mod
-`rdp-session-toolkit-taskbar-client-embedded`, running in this machine's own
-`explorer.exe`). Once a second this mod also writes a small status snapshot —
+serves the taskbar-embedded panel — this same mod's `explorer.exe` branch,
+running in this machine's own Explorer. Once a second this mod also writes a
+small status snapshot —
 session active, duration, this PC's idle time, connection quality, stuck
 state, minimized / fullscreen — to `local-widget-status.dat` in its Windhawk
 mod storage folder, which the widget reads and treats as stale after a few
 seconds without a fresh write. Widget commands (minimize, restore, fullscreen
 toggle, reconnect, disconnect) must carry a 32-byte shared secret stored as
 `HKCU\Software\RDPSessionToolkit\LocalWidgetSecret`, generated with the
-system CSPRNG by whichever of the two mods starts first; any command without
-the exact secret is ignored. The relay receiver above is not involved and
-unchanged.
+system CSPRNG by whichever of the two branches starts first; any command
+without the exact secret is ignored. The relay receiver above is not involved
+and unchanged.
 
 ## Taskbar-embedded panel (explorer.exe branch)
 
@@ -159,11 +171,21 @@ When injected into the client machine's own `explorer.exe`, this mod puts a
 embedded in the taskbar's own XAML tree. The panel shows:
 
 - the remote host name, and the session duration / connection quality Remote
-  Desktop reports (or an honest "quality n/a" / "not responding" line);
+  Desktop reports (or an honest "quality n/a" / "not responding" line).
+  **Hover that text** for the full detail — how long the session has been
+  open, how long this computer's own keyboard and mouse have been idle, the
+  reported quality level with its bandwidth and round-trip time, and the
+  not-responding warning with its running count. (This is the tooltip that
+  used to hang off the thumbnail toolbar's status icon; it moved here in
+  v0.9.0 when that toolbar was removed. *Show session duration and idle time*
+  and *Show connection quality* control which lines it carries.)
 - five always-visible buttons — **Minimize**, **Restore**,
-  **Switch to fullscreen / windowed**, **Reconnect**, and **Disconnect** — the
-  same five actions as the thumbnail toolbar, each directly clickable, with the
-  same enabled/disabled/relabel rules driven by the session's real state.
+  **Switch to fullscreen / windowed**, **Reconnect**, and **Disconnect** —
+  each directly clickable, each with its own tooltip explaining in plain
+  language what the click actually does to the session, and each enabled,
+  disabled, or relabelled from the session's real state. Reconnect is hidden
+  unless *Enable Reconnect and Force reconnect* is on; the fullscreen toggle
+  is hidden unless *Fullscreen / windowed toggle button* is on.
 
 The panel does nothing to the RDP session by itself. It reads the status
 snapshot the mstsc branch writes once a second (treating it as **stale** — no
@@ -174,8 +196,12 @@ mstsc branch's local command window (`CitadelRdpTaskbarLocalWidget`) over
 branches are the same mod id, the panel finds the snapshot file directly via
 `Wh_GetModStoragePath` — the same directory the mstsc branch writes to.
 
-Its own settings are the `embedded…` group (position, width, font size, offset,
-show-when-no-session). One session at a time, like the rest of the toolkit.
+Its own layout settings are the `embedded…` group (position, width, font size,
+offset, show-when-no-session); what it *shows* is additionally governed by the
+shared *Show session duration and idle time*, *Show connection quality*,
+*Fullscreen / windowed toggle button*, and *Enable Reconnect and Force
+reconnect* settings above. One session at a time, like the rest of the
+toolkit.
 
 ## Requirements
 
@@ -202,12 +228,9 @@ configured default.
 - hideBar: true
   $name: Hide connection bar
   $description: Hides the native RDP connection bar. Turn off to restore it.
-- showThumbbar: true
-  $name: Show taskbar thumbnail toolbar
-  $description: Shows the controls under the mstsc taskbar thumbnail preview — status icon plus Minimize, Restore, Fullscreen toggle, Reconnect, and Disconnect. On by default. Independent of the floating overlay button below. If it does not appear, close and reopen the Remote Desktop connection.
 - showOverlay: false
   $name: Show floating overlay button
-  $description: Shows a floating button pinned to a corner of the RDP monitor (fullscreen sessions) with Minimize, Restore, and Disconnect controls. Off by default. Independent of the taskbar thumbnail toolbar above. If it does not appear, close and reopen the Remote Desktop connection.
+  $description: Shows a floating button pinned to a corner of the RDP monitor (fullscreen sessions) with Minimize, Restore, and Disconnect controls. Off by default and entirely optional — the taskbar-embedded panel, configured under its own group below, is always available and covers windowed sessions too. If it does not appear, close and reopen the Remote Desktop connection.
 - buttonPosition: top-right
   $name: Overlay button position (mstsc.exe)
   $description: Which corner of the RDP monitor to place the floating overlay button. Applies to the mstsc.exe surface only — the taskbar-embedded panel has its own position under the Taskbar-embedded panel group below.
@@ -260,13 +283,13 @@ configured default.
   - pause: Pause / Break
 - showSessionInfo: true
   $name: Show session duration and idle time
-  $description: Shows how long the session window has been open and how long this computer's own keyboard and mouse have been idle. Appears as a row on the on-screen button (fullscreen sessions only) and in the tooltip of the status icon under the taskbar thumbnail (all sessions). Idle time is measured on this computer, not from remote-session activity.
+  $description: Shows how long the session window has been open and how long this computer's own keyboard and mouse have been idle. Appears as a row on the floating overlay button (fullscreen sessions only) and in the tooltip of the taskbar-embedded panel's status text (all sessions — hover it). Idle time is measured on this computer, not from remote-session activity.
 - showConnectionQuality: true
   $name: Show connection quality
-  $description: Colors the status icon under the taskbar thumbnail by the connection quality Remote Desktop itself reports (4 levels, green to red), with the reported bandwidth and round-trip time in the tooltip. Grey until the first report arrives; says so in the tooltip if the session was already open when the mod loaded.
+  $description: Adds the connection quality Remote Desktop itself reports (4 levels, Poor to Excellent) to the tooltip of the taskbar-embedded panel's status text, along with the reported bandwidth and round-trip time. The tooltip says it is still waiting until the first report arrives, and says so plainly if the session was already open when the mod loaded.
 - enableReconnect: false
   $name: Enable Reconnect and Force reconnect
-  $description: Off by default. When on, adds a Reconnect button under the taskbar thumbnail and on the taskbar-embedded panel that cleanly disconnects this session (same as Disconnect) and then reopens the same connection in the preferred display mode below, and lets the stuck-session alert offer Force reconnect. When off, no surface can relaunch the connection — the stuck-session alert still appears but offers only Dismiss. Nothing ever reconnects without your click.
+  $description: Off by default. When on, adds a Reconnect button to the taskbar-embedded panel that cleanly disconnects this session (same as Disconnect) and then reopens the same connection in the preferred display mode below, and lets the stuck-session alert offer Force reconnect. When off, no surface can relaunch the connection — the stuck-session alert still appears but offers only Dismiss. Nothing ever reconnects without your click.
 - reconnectDisplayMode: fullscreen
   $name: Preferred display mode for reconnects
   $description: How a reopened session is displayed by Reconnect and Force reconnect. Windowed uses the width and height below.
@@ -282,13 +305,13 @@ configured default.
   $description: Remote desktop height for windowed reconnects. 0 = reuse the current session window's size at the moment you reconnect.
 - stuckDetection: true
   $name: Detect stuck sessions
-  $description: Watches the session window for a hang. Once it has stopped responding for the threshold below, a small on-screen alert appears and the status icon under the taskbar thumbnail turns to a warning. With Enable Reconnect on, the alert offers Force reconnect (which ends the stuck client and reopens the connection using the reconnect display mode); with it off, the alert offers Dismiss only. Never reconnects on its own — it always waits for your click.
+  $description: Watches the session window for a hang. Once it has stopped responding for the threshold below, a small alert appears on the session's own monitor and the taskbar-embedded panel shows a not-responding line. With Enable Reconnect on, the alert offers Force reconnect (which ends the stuck client and reopens the connection using the reconnect display mode); with it off, the alert offers Dismiss only. Never reconnects on its own — it always waits for your click. Keep this on if you turn the floating overlay off, since the watchdog also keeps the status snapshot flowing to the panel.
 - stuckThresholdSeconds: 10
   $name: Stuck threshold (seconds)
   $description: How many consecutive seconds the session window must be reported as not responding before the alert appears. Windows itself only reports a window as not responding after about 5 seconds, so the alert appears roughly that much later than this value.
 - showFullscreenToggle: true
   $name: Fullscreen / windowed toggle button
-  $description: Adds a button under the taskbar thumbnail that switches the session between fullscreen and windowed without disconnecting. It sends Remote Desktop's own Ctrl+Alt+Break toggle to the session window, so it behaves exactly like pressing that shortcut. Part of the taskbar thumbnail toolbar.
+  $description: Shows the fullscreen / windowed button on the taskbar-embedded panel. It switches the session between fullscreen and windowed without disconnecting, by sending Remote Desktop's own Ctrl+Alt+Break toggle to the session window, so it behaves exactly like pressing that shortcut. Turn it off to leave the button out of the panel's row.
 - debugRelayTestMinimize: false
   $name: "Debug: send test minimize via relay"
   $description: Turning this on sends one test WM_COPYDATA minimize command to the mod's own CitadelRdpTaskbarRelay message window, exercising the relay receiver without the DVC relay plugin existing. Turn it off and on again to send another. Has no other effect.
@@ -319,7 +342,6 @@ configured default.
 
 #include <windows.h>
 #include <shellscalingapi.h>
-#include <shobjidl.h>
 #include <windowsx.h>
 #include <shellapi.h>
 #include <oaidl.h>
@@ -351,10 +373,6 @@ configured default.
 #include <winrt/Windows.UI.Xaml.Controls.h>
 #include <winrt/Windows.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
-
-#ifndef THBN_CLICKED
-#define THBN_CLICKED 0x1800
-#endif
 
 // WH_CATCH logs hresult, std::exception, and unknown exceptions with a context
 // label. Usage: try { ... } WH_CATCH(L"context"). Used by the explorer.exe
@@ -595,6 +613,18 @@ PCWSTR QualityLabel(int q) {
     }
 }
 
+// "1h 23m" / "23m" / "<1m" — the coarse, minute-granular form used by the
+// rich status tooltip. Shared: the mstsc branch used it for the thumbnail
+// toolbar's status-icon tooltip; that tooltip now lives on the explorer
+// branch's taskbar-embedded panel (D-33), and it is the only caller left.
+void FormatCoarse(ULONGLONG ms, wchar_t* out, size_t cch) {
+    ULONGLONG mins = ms / 60000;
+    unsigned h = (unsigned)(mins / 60), m = (unsigned)(mins % 60);
+    if (h)      swprintf_s(out, cch, L"%uh %02um", h, m);
+    else if (m) swprintf_s(out, cch, L"%um", m);
+    else        wcscpy_s(out, cch, L"<1m");
+}
+
 // "1:23:45" / "23:45" — the compact, second-granular clock form used by both
 // the overlay's status row and the embedded panel's duration line.
 void FormatClock(ULONGLONG ms, wchar_t* out, size_t cch) {
@@ -655,7 +685,6 @@ constexpr UINT WM_REPAINT_BTN  = WM_APP + 3;
  */
 bool g_hideBar        = true;
 bool g_showOverlay    = false;  // floating overlay button (mstsc monitor corner)
-bool g_showThumbbar   = true;   // taskbar thumbnail toolbar
 bool g_buttonOnRight  = true;
 bool g_buttonAtBottom = false;
 int  g_buttonOffset   = 32;
@@ -664,11 +693,17 @@ bool g_showHostname   = true;
 bool g_fadeWhenIdle   = false;
 bool g_enableHotkey   = false;
 bool g_debugRelayTest = false;
-bool g_showFsToggle   = true;
 bool g_showSessionInfo = true;
-bool g_showNetQuality = true;
-// Gates EVERY relaunch surface — thumb-bar Reconnect, the local widget's
-// Reconnect command, and the stuck-session alert's Force reconnect (D-28).
+// showFullscreenToggle and showConnectionQuality are read by the explorer.exe
+// branch, not here (v0.9.0): the taskbar-embedded panel is the only surface
+// that presents either, now that the thumbnail toolbar is gone (D-33). Same
+// one-setting-read-by-the-owning-branch pattern as enableReconnect, which the
+// embedded branch already reads for its own button. The quality event sink
+// below still runs unconditionally in this process — it publishes into the
+// status snapshot; what is *displayed* is the panel's decision.
+// Gates EVERY relaunch surface — the taskbar-embedded panel's Reconnect
+// button, the local widget command it sends, and the stuck-session alert's
+// Force reconnect (D-28).
 // Off by default: relaunching a connection is the one action here that can
 // do something unexpected (a plan captured against a temp .rdp file an
 // external launcher has since deleted, say), so it is opt-in.
@@ -685,15 +720,12 @@ UINT g_hotkeyVk       = 'D';
 void LoadSettings() {
     g_hideBar      = Wh_GetIntSetting(L"hideBar")      != 0;
     g_showOverlay  = Wh_GetIntSetting(L"showOverlay")  != 0;
-    g_showThumbbar = Wh_GetIntSetting(L"showThumbbar") != 0;
     g_showBorder   = Wh_GetIntSetting(L"showBorder")   != 0;
     g_showHostname = Wh_GetIntSetting(L"showHostname") != 0;
     g_fadeWhenIdle = Wh_GetIntSetting(L"fadeWhenIdle") != 0;
     g_enableHotkey = Wh_GetIntSetting(L"enableHotkey") != 0;
     g_debugRelayTest = Wh_GetIntSetting(L"debugRelayTestMinimize") != 0;
-    g_showFsToggle   = Wh_GetIntSetting(L"showFullscreenToggle") != 0;
     g_showSessionInfo = Wh_GetIntSetting(L"showSessionInfo") != 0;
-    g_showNetQuality = Wh_GetIntSetting(L"showConnectionQuality") != 0;
     g_enableReconnect = Wh_GetIntSetting(L"enableReconnect") != 0;
     g_reconnectW     = Wh_GetIntSetting(L"reconnectWindowWidth");
     g_reconnectH     = Wh_GetIntSetting(L"reconnectWindowHeight");
@@ -757,14 +789,14 @@ HWND                      g_hRdpFrame       = nullptr;
 WNDPROC                   g_origBBarWndProc = nullptr;
 WNDPROC                   g_origFrameWndProc = nullptr;  // guarded by g_cs
 
-// Registered window messages for the frame subclass. Written once in
+// Registered window message for the frame subclass. Written once in
 // Wh_ModInit before any hook can run, read-only afterwards — no
-// synchronization needed. RegisterWindowMessage (not WM_APP offsets) so the
-// values cannot collide with anything mstsc itself uses on its frame window.
-UINT g_msgTaskbarButtonCreated = 0;  // Microsoft's documented taskbar signal
-UINT g_msgThumbRefresh         = 0;  // re-evaluate thumb bar state/visibility
-UINT g_msgThumbTeardown        = 0;  // release COM state on the frame thread
-UINT g_msgStatusRefresh        = 0;  // status icon/tooltip text may have changed
+// synchronization needed. RegisterWindowMessage (not a WM_APP offset) so the
+// value cannot collide with anything mstsc itself uses on its frame window.
+// One message remains since v0.9.0: the thumb bar's TaskbarButtonCreated /
+// refresh / status-refresh messages went with it (D-33); the event sink's
+// home-thread teardown did not.
+UINT g_msgSinkTeardown = 0;  // release the RDP event sink on the frame thread
 std::atomic<HMONITOR>     g_hLastMonitor    { nullptr };
 wchar_t                   g_hostname[256]   = {};
 HANDLE                    g_hHelperThread   = nullptr;
@@ -987,7 +1019,7 @@ void UpdateHostname() {
 void ClearPendingReconnect();  // reconnect helper, below
 
 // keepPendingReconnect is true only for the reconnect helper's own close;
-// every plain Disconnect (overlay, thumb bar, hotkey) drops any parked
+// every plain Disconnect (overlay, panel, hotkey) drops any parked
 // reconnect plan so a later ordinary close can never relaunch by surprise.
 void DisconnectSession(HWND hRef, bool keepPendingReconnect = false) {
     if (!keepPendingReconnect)
@@ -1027,8 +1059,8 @@ bool IsRdpFrameIconic() {
     return hFrame && IsIconic(hFrame) != FALSE;
 }
 
-// The one shared minimize action, used by both the thumbnail toolbar button
-// and the relay receiver so every requester takes the identical path. A
+// The one shared minimize action, used by the relay receiver and the local
+// widget receiver alike, so every requester takes the identical path. A
 // request while already minimized (or with no frame) is a deliberate no-op.
 // pOrigShowWindow can be null for a very early relay command — the hooks
 // are applied only after Wh_ModInit returns — so fall back to the plain API.
@@ -1043,9 +1075,9 @@ bool MinimizeRdpFrame(PCWSTR source) {
     return false;
 }
 
-// The shared restore counterpart of MinimizeRdpFrame — the thumbnail toolbar,
-// the overlay's Restore zone, and the local widget receiver all take this one
-// path. A request while not minimized (or with no frame) is a deliberate
+// The shared restore counterpart of MinimizeRdpFrame — the overlay's Restore
+// zone and the local widget receiver both take this one path. A request while
+// not minimized (or with no frame) is a deliberate
 // no-op, mirroring the minimize side.
 bool RestoreRdpFrame(PCWSTR source) {
     HWND hFrame = GetRdpFrameForAction();
@@ -1354,17 +1386,8 @@ DWORD GetLocalIdleMs() {
 }
 
 // FormatClock ("1:23:45" / "23:45", the overlay's compact second-granular
-// form) is a shared contract now — defined once above the branch namespaces.
-
-// "1h 23m" / "23m" / "<1m" — the tooltip's coarse form. Changes at most
-// once a minute, so the thumb-bar tooltip refresh stays quiet.
-void FormatCoarse(ULONGLONG ms, wchar_t* out, size_t cch) {
-    ULONGLONG mins = ms / 60000;
-    unsigned h = (unsigned)(mins / 60), m = (unsigned)(mins % 60);
-    if (h)      swprintf_s(out, cch, L"%uh %02um", h, m);
-    else if (m) swprintf_s(out, cch, L"%um", m);
-    else        wcscpy_s(out, cch, L"<1m");
-}
+// form) and FormatCoarse ("1h 23m", the tooltip's coarse form) are shared
+// contracts now — defined once above the branch namespaces.
 
 // ── Stuck-session state ───────────────────────────────────────────────────
 //
@@ -1430,57 +1453,22 @@ void LogRdpEventsDiag(PCWSTR when) {
 // QualityLabel is a shared contract now — defined once above the branch
 // namespaces.
 
-// Tooltip of the thumbnail toolbar's status icon: one line per enabled
-// status feature (tooltips render '\n' as a line break).
-void FormatStatusTooltip(wchar_t* out, size_t cch) {
-    out[0] = L'\0';
-    if (g_showSessionInfo && g_sessionStartTick.load()) {
-        wchar_t dur[32], idle[32];
-        FormatCoarse(GetSessionDurationMs(), dur, ARRAYSIZE(dur));
-        FormatCoarse(GetLocalIdleMs(), idle, ARRAYSIZE(idle));
-        swprintf_s(out, cch, L"Session %s · this PC idle %s", dur, idle);
-    }
-    if (g_showNetQuality) {
-        wchar_t line[160];
-        int q = g_netQuality.load();
-        if (!g_sinkAdvised.load())
-            wcscpy_s(line, L"Quality: unavailable — RDP control not hooked "
-                           L"(reopen the session)");
-        else if (q < 1 || q > 4)
-            wcscpy_s(line, L"Quality: waiting for Remote Desktop's first report");
-        else
-            swprintf_s(line, ARRAYSIZE(line),
-                L"Quality %d/4 (%s) · bandwidth %ld · rtt %ld ms",
-                q, QualityLabel(q), g_netBandwidth.load(), g_netRtt.load());
-        if (out[0]) wcscat_s(out, cch, L"\n");
-        wcscat_s(out, cch, line);
-    }
-    if (g_stuckDetection && g_sessionHung.load()) {
-        wchar_t line[120];
-        if (g_enableReconnect)
-            swprintf_s(line, ARRAYSIZE(line),
-                L"NOT RESPONDING for %d s — use the on-screen alert to force reconnect",
-                g_hungSeconds.load());
-        else
-            swprintf_s(line, ARRAYSIZE(line),
-                L"NOT RESPONDING for %d s", g_hungSeconds.load());
-        if (out[0]) wcscat_s(out, cch, L"\n");
-        wcscat_s(out, cch, line);
-    }
-    if (!out[0])
-        wcscpy_s(out, cch, L"RDP Session Toolkit");
-}
+// The rich status tooltip that used to hang off the thumbnail toolbar's
+// status icon (session duration, this PC's idle time, connection quality with
+// bandwidth and round-trip time, and the not-responding warning) is not built
+// here any more. It lives on the explorer.exe branch now, as
+// FormatEmbeddedStatusTooltip, rebuilt from the very same fields this branch
+// already publishes in the status snapshot (D-33). It could not simply be
+// moved: this function read mstsc-side globals that do not exist in the other
+// process.
 
-// Wakes both presentation surfaces after a status change from any thread:
-// the frame thread re-syncs the thumb bar (status icon + tooltip), the
-// helper thread repaints the overlay.
+// Wakes this branch's one live presentation surface after a status change
+// from any thread: the helper thread repaints the floating overlay. The
+// taskbar-embedded panel is not poked — it is in another process and picks
+// the change up from the 1 s status snapshot on its own poll. (Before v0.9.0
+// this also posted to the frame thread to re-sync the thumbnail toolbar's
+// status icon and tooltip; that surface is gone — D-33.)
 void NotifyStatusChanged() {
-    EnterCriticalSection(&g_cs);
-    HWND hFrame   = g_hRdpFrame;
-    bool frameSub = g_origFrameWndProc != nullptr;
-    LeaveCriticalSection(&g_cs);
-    if (frameSub && g_msgStatusRefresh && hFrame && IsWindow(hFrame))
-        PostMessageW(hFrame, g_msgStatusRefresh, 0, 0);
     DWORD helperThreadId = g_helperThreadId.load();
     if (helperThreadId)
         PostThreadMessageW(helperThreadId, WM_REPAINT_BTN, 0, 0);
@@ -1522,8 +1510,10 @@ bool IsFrameForeground(HWND hFrame) {
     return fg && (fg == hFrame || GetAncestor(fg, GA_ROOT) == hFrame);
 }
 
-// A thumbnail-toolbar click reaches us via explorer.exe, so this process may
-// not currently hold foreground rights. Plain SetForegroundWindow first; if
+// The toggle is driven from the taskbar-embedded panel, i.e. from a click in
+// explorer.exe, so this process may not currently hold foreground rights.
+// (The same was true of the taskbar thumbnail toolbar this code was first
+// written for.) Plain SetForegroundWindow first; if
 // that is refused, briefly join the foreground thread's input queue and ask
 // again — the long-established way a process takes the foreground right
 // after the user actually clicked something of its own.
@@ -1743,466 +1733,23 @@ void DeleteLocalWidgetStatusFile() {
         DeleteFileW(path);
 }
 
-// ── Taskbar thumbnail toolbar ─────────────────────────────────────────────
+// ── RDP frame subclass ─────────────────────────────────────────────────────
 //
-// Buttons under the taskbar hover thumbnail of the RDP frame. Everything
-// below runs on the RDP frame's own thread (inside FrameSubclassProc): the
-// TaskbarButtonCreated message arrives there, and CLSID_TaskbarList is
-// registered ThreadingModel=Apartment, so the interface pointer must be
-// created, used, and released on that one thread.
-//
-// ThumbBarAddButtons is a one-shot API per taskbar-button lifetime — no
-// add/remove/reorder afterwards, 7 buttons maximum — so every button this
-// mod can ever show is added up front in its permanent left-to-right order
-// (slot index == position), and per-feature settings then hide or show the
-// individual buttons with THBF_HIDDEN. All state pushes go through one
-// diff-based sync (SyncThumbButtons) so every driver can call it freely.
-
-enum ThumbSlot : int {
-    THUMB_SLOT_STATUS = 0,   // indicator (session clock / idle in the tooltip)
-    THUMB_SLOT_MINIMIZE,
-    THUMB_SLOT_RESTORE,
-    THUMB_SLOT_FSTOGGLE,
-    THUMB_SLOT_RECONNECT,
-    THUMB_SLOT_DISCONNECT,
-    THUMB_SLOT_COUNT
-};
-static_assert(THUMB_SLOT_COUNT <= 7, "thumbnail toolbar allows at most 7 buttons");
-
-constexpr UINT THUMB_ID_BASE       = 1001;
-constexpr UINT THUMB_ID_STATUS     = THUMB_ID_BASE + THUMB_SLOT_STATUS;
-constexpr UINT THUMB_ID_MINIMIZE   = THUMB_ID_BASE + THUMB_SLOT_MINIMIZE;
-constexpr UINT THUMB_ID_RESTORE    = THUMB_ID_BASE + THUMB_SLOT_RESTORE;
-constexpr UINT THUMB_ID_FSTOGGLE   = THUMB_ID_BASE + THUMB_SLOT_FSTOGGLE;
-constexpr UINT THUMB_ID_RECONNECT  = THUMB_ID_BASE + THUMB_SLOT_RECONNECT;
-constexpr UINT THUMB_ID_DISCONNECT = THUMB_ID_BASE + THUMB_SLOT_DISCONNECT;
-
-bool IsThumbButtonId(UINT id) {
-    return id >= THUMB_ID_BASE && id < THUMB_ID_BASE + THUMB_SLOT_COUNT;
-}
-
-// Segoe MDL2 Assets glyphs rendered into icons once per (re)establishment.
-// Codepoints per Microsoft's Segoe MDL2 reference: E921 ChromeMinimize,
-// E923 ChromeRestore, E740 FullScreen, E73F BackToWindow, E72C Refresh,
-// E8BB ChromeClose.
-enum GlyphIcon : int {
-    GLYPH_MINIMIZE = 0,
-    GLYPH_RESTORE,
-    GLYPH_FULLSCREEN,
-    GLYPH_BACKTOWINDOW,
-    GLYPH_REFRESH,
-    GLYPH_CLOSE,
-    GLYPH_COUNT
-};
-constexpr wchar_t kGlyphCodepoints[GLYPH_COUNT] = {
-    0xE921, 0xE923, 0xE740, 0xE73F, 0xE72C, 0xE8BB
-};
-
-// The status slot's icon is color-coded: E701 Wifi in a quality tone, or
-// E7BA Warning for an alert. Rendered lazily per tone and cached so the
-// HICON handles stay stable for the diff-based sync.
-enum StatusTone : int {
-    TONE_NEUTRAL = 0,   // nothing reported (or quality display off)
-    TONE_POOR,          // quality 1
-    TONE_FAIR,          // quality 2
-    TONE_GOOD,          // quality 3
-    TONE_EXCELLENT,     // quality 4
-    TONE_ALERT,         // session not responding
-    TONE_COUNT
-};
-constexpr wchar_t kGlyphWifi    = 0xE701;
-constexpr wchar_t kGlyphWarning = 0xE7BA;
-
-// Defined locally instead of pulling in -luuid for two GUIDs.
-const CLSID kCLSID_TaskbarList =
-    { 0x56FDF344, 0xFD6D, 0x11D0, { 0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90 } };
-const IID kIID_ITaskbarList3 =
-    { 0xEA1AFB91, 0x9E28, 0x4B86, { 0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF } };
-
-// Frame-thread-only state. Like the helper thread's drag state, these are
-// only ever touched on the thread that owns the frame window, so they need
-// no synchronization. Wh_ModUninit reaches them indirectly, by sending
-// g_msgThumbTeardown to the frame (see TeardownThumbBar).
-ITaskbarList3* g_pTaskbarList         = nullptr;
-bool           g_thumbButtonsAdded    = false;
-bool           g_comInitedByThumbBar  = false;
-bool           g_taskbarButtonCreated = false;
-HICON          g_glyphIcons[GLYPH_COUNT]  = {};
-HICON          g_statusIcons[TONE_COUNT]  = {};
-bool           g_statusIconsLight         = false;  // theme they were rendered for
-// What the taskbar was last told about each slot — SyncThumbButtons diffs
-// against this so only real changes cross into explorer.exe.
-THUMBBUTTON    g_thumbLast[THUMB_SLOT_COUNT] = {};
-
-// The thumbnail flyout follows the taskbar's theme, not the app theme.
-bool IsTaskbarLightTheme() {
-    DWORD val = 0, cb = sizeof(val);
-    if (RegGetValueW(HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-            L"SystemUsesLightTheme", RRF_RT_REG_DWORD, nullptr, &val, &cb)
-            == ERROR_SUCCESS)
-        return val != 0;
-    return false;  // value absent → Windows defaults to a dark taskbar
-}
-
-// Renders one Segoe MDL2 Assets glyph into a 32-bpp ARGB HICON in the given
-// color. THUMBBUTTON requires a real icon handle — this is a different
-// mechanism from the overlay button's direct GDI text painting. GDI text
-// output carries no alpha, so the glyph is drawn white-on-black and the
-// grayscale coverage is reinterpreted as a premultiplied alpha channel
-// afterwards, tinted with the requested color.
-HICON CreateGlyphIconColor(wchar_t glyph, COLORREF color) {
-    int cx = GetSystemMetrics(SM_CXSMICON);
-    int cy = GetSystemMetrics(SM_CYSMICON);
-    if (cx <= 0 || cy <= 0) { cx = 16; cy = 16; }
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize        = sizeof(bmi.bmiHeader);
-    bmi.bmiHeader.biWidth       = cx;
-    bmi.bmiHeader.biHeight      = -cy;  // top-down
-    bmi.bmiHeader.biPlanes      = 1;
-    bmi.bmiHeader.biBitCount    = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    HDC hdc = CreateCompatibleDC(nullptr);
-    if (!hdc)
-        return nullptr;
-    void* bits = nullptr;
-    HBITMAP hbmColor = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!hbmColor || !bits) {
-        if (hbmColor) DeleteObject(hbmColor);
-        DeleteDC(hdc);
-        return nullptr;
-    }
-
-    HBITMAP hbmOld = (HBITMAP)SelectObject(hdc, hbmColor);
-    memset(bits, 0, (size_t)cx * cy * 4);
-
-    // ANTIALIASED, not ClearType: ClearType's subpixel coloring would corrupt
-    // the coverage-as-alpha conversion below.
-    HFONT hFont = CreateFontW(
-        -MulDiv(cy, 3, 4), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe MDL2 Assets");
-    HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(255, 255, 255));
-    RECT rc = { 0, 0, cx, cy };
-    wchar_t text[2] = { glyph, 0 };
-    DrawTextW(hdc, text, 1, &rc,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    GdiFlush();
-
-    DWORD r = GetRValue(color), g = GetGValue(color), b = GetBValue(color);
-    DWORD* px = (DWORD*)bits;
-    for (int i = 0; i < cx * cy; i++) {
-        DWORD a = px[i] & 0xFF;  // white-on-black: any channel = coverage
-        // Premultiplied ARGB: each channel scaled by the coverage alpha.
-        px[i] = (a << 24) | ((r * a / 255) << 16) | ((g * a / 255) << 8)
-              | (b * a / 255);
-    }
-
-    SelectObject(hdc, hOldFont);
-    DeleteObject(hFont);
-    SelectObject(hdc, hbmOld);
-    DeleteDC(hdc);
-
-    HBITMAP hbmMask = CreateBitmap(cx, cy, 1, 1, nullptr);
-    ICONINFO ii = {};
-    ii.fIcon    = TRUE;
-    ii.hbmMask  = hbmMask;
-    ii.hbmColor = hbmColor;
-    HICON hIcon = CreateIconIndirect(&ii);
-    if (hbmMask) DeleteObject(hbmMask);
-    DeleteObject(hbmColor);
-    return hIcon;
-}
-
-// Theme-neutral glyph: black on a light taskbar, white on a dark one.
-HICON CreateGlyphIcon(wchar_t glyph, bool darkGlyph) {
-    return CreateGlyphIconColor(glyph,
-        darkGlyph ? RGB(0, 0, 0) : RGB(255, 255, 255));
-}
-
-COLORREF StatusToneColor(StatusTone tone, bool lightTaskbar) {
-    switch (tone) {
-    case TONE_POOR:      return RGB(232,  64,  64);
-    case TONE_FAIR:      return RGB(255, 170,   0);
-    case TONE_GOOD:      return RGB(163, 205,  60);
-    case TONE_EXCELLENT: return RGB( 52, 199,  89);
-    case TONE_ALERT:     return RGB(255,  80,  80);
-    default:             return lightTaskbar ? RGB(110, 110, 110)
-                                             : RGB(160, 160, 160);
-    }
-}
-
-// Frame-thread-only: lazily renders (and caches) the status icon for a tone.
-HICON GetStatusIcon(StatusTone tone) {
-    bool light = IsTaskbarLightTheme();
-    if (light != g_statusIconsLight) {
-        for (int i = 0; i < TONE_COUNT; i++) {
-            if (g_statusIcons[i]) { DestroyIcon(g_statusIcons[i]); g_statusIcons[i] = nullptr; }
-        }
-        g_statusIconsLight = light;
-    }
-    if (!g_statusIcons[tone])
-        g_statusIcons[tone] = CreateGlyphIconColor(
-            tone == TONE_ALERT ? kGlyphWarning : kGlyphWifi,
-            StatusToneColor(tone, light));
-    return g_statusIcons[tone];
-}
-
-// The tone the status slot should show right now. A detected hang wins;
-// quality only colors the icon when a real report has arrived; otherwise
-// neutral.
-StatusTone CurrentStatusTone() {
-    if (g_stuckDetection && g_sessionHung.load())
-        return TONE_ALERT;
-    if (g_showNetQuality) {
-        switch (g_netQuality.load()) {
-        case 1: return TONE_POOR;
-        case 2: return TONE_FAIR;
-        case 3: return TONE_GOOD;
-        case 4: return TONE_EXCELLENT;
-        default: break;
-        }
-    }
-    return TONE_NEUTRAL;
-}
-
-void FillThumbButton(THUMBBUTTON* btn, UINT id, HICON hIcon, PCWSTR tip,
-                     THUMBBUTTONFLAGS flags) {
-    btn->dwMask  = (THUMBBUTTONMASK)(THB_ICON | THB_TOOLTIP | THB_FLAGS);
-    btn->iId     = id;
-    btn->hIcon   = hIcon;
-    btn->dwFlags = flags;
-    wcsncpy_s(btn->szTip, tip, _TRUNCATE);
-}
-
-// The single source of truth for every slot's flags, icon, and tooltip,
-// computed from live window state and the current settings. The add path,
-// the visibility toggles, and every state refresh all derive from this.
-// `visible` false hides everything (showThumbbar off, or teardown).
-void ComputeThumbButtons(HWND hwnd, bool visible,
-                         THUMBBUTTON out[THUMB_SLOT_COUNT]) {
-    bool iconic     = IsIconic(hwnd) != FALSE;
-    bool fullscreen = IsRdpFrameFullscreen(hwnd);
-
-    // Status indicator: not a command — flat (no button chrome), its icon is
-    // color-coded and its tooltip carries the live text. Shown whenever any
-    // status feature is on.
-    wchar_t tip[ARRAYSIZE(THUMBBUTTON::szTip)];
-    FormatStatusTooltip(tip, ARRAYSIZE(tip));
-    bool statusOn = g_showSessionInfo || g_showNetQuality || g_stuckDetection;
-    FillThumbButton(&out[THUMB_SLOT_STATUS], THUMB_ID_STATUS,
-        GetStatusIcon(CurrentStatusTone()), tip,
-        (THUMBBUTTONFLAGS)(((visible && statusOn) ? THBF_ENABLED
-                                                   : THBF_HIDDEN)
-                           | THBF_NOBACKGROUND));
-
-    FillThumbButton(&out[THUMB_SLOT_MINIMIZE], THUMB_ID_MINIMIZE,
-        g_glyphIcons[GLYPH_MINIMIZE], L"Minimize",
-        !visible ? THBF_HIDDEN : (iconic ? THBF_DISABLED : THBF_ENABLED));
-
-    FillThumbButton(&out[THUMB_SLOT_RESTORE], THUMB_ID_RESTORE,
-        g_glyphIcons[GLYPH_RESTORE], L"Restore",
-        !visible ? THBF_HIDDEN : (iconic ? THBF_ENABLED : THBF_DISABLED));
-
-    // The toggle dismisses the thumbnail flyout on click so the RDP frame
-    // can take the foreground cleanly for the chord (see ToggleFullscreen).
-    FillThumbButton(&out[THUMB_SLOT_FSTOGGLE], THUMB_ID_FSTOGGLE,
-        g_glyphIcons[fullscreen ? GLYPH_BACKTOWINDOW : GLYPH_FULLSCREEN],
-        fullscreen ? L"Switch to windowed (Ctrl+Alt+Break)"
-                   : L"Switch to fullscreen (Ctrl+Alt+Break)",
-        (THUMBBUTTONFLAGS)(((visible && g_showFsToggle) ? THBF_ENABLED
-                                                         : THBF_HIDDEN)
-                           | THBF_DISMISSONCLICK));
-
-    wchar_t reconnectTip[96];
-    if (g_reconnectMode == RECONNECT_WINDOWED && g_reconnectW > 0 && g_reconnectH > 0)
-        swprintf_s(reconnectTip, ARRAYSIZE(reconnectTip),
-            L"Reconnect windowed (%d×%d)", g_reconnectW, g_reconnectH);
-    else
-        swprintf_s(reconnectTip, ARRAYSIZE(reconnectTip),
-            L"Reconnect (%s)", ReconnectModeLabel());
-    FillThumbButton(&out[THUMB_SLOT_RECONNECT], THUMB_ID_RECONNECT,
-        g_glyphIcons[GLYPH_REFRESH], reconnectTip,
-        (visible && g_enableReconnect) ? THBF_ENABLED : THBF_HIDDEN);
-
-    FillThumbButton(&out[THUMB_SLOT_DISCONNECT], THUMB_ID_DISCONNECT,
-        g_glyphIcons[GLYPH_CLOSE], L"Disconnect",
-        !visible ? THBF_HIDDEN : THBF_ENABLED);
-}
-
-// Establishes (or, after an explorer.exe restart, re-establishes) the
-// thumbnail toolbar. ThumbBarAddButtons is a one-shot API per taskbar
-// button lifetime: buttons cannot be added, removed, or reordered after the
-// first call, and 7 is the maximum — every slot goes in with one call, in
-// its permanent left-to-right order.
-void CreateOrRefreshThumbBar(HWND hwnd) {
-    if (g_pTaskbarList) {
-        g_pTaskbarList->Release();
-        g_pTaskbarList = nullptr;
-    }
-    g_thumbButtonsAdded = false;
-
-    // Defensive COM init: this mod is injected into a process it does not
-    // control, so no assumption about this thread's COM state. mstsc's UI
-    // thread normally has COM already (S_FALSE, which still needs
-    // balancing); RPC_E_CHANGED_MODE means the thread is already COM-
-    // initialized under a different concurrency model — usable as-is for
-    // CoCreateInstance, and nothing for us to balance.
-    if (!g_comInitedByThumbBar) {
-        HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-        if (hrCo == S_OK || hrCo == S_FALSE) {
-            g_comInitedByThumbBar = true;  // balanced in TeardownThumbBar
-        } else if (hrCo != RPC_E_CHANGED_MODE) {
-            Wh_Log(L"ThumbBar: CoInitializeEx failed hr=0x%08X", hrCo);
-            return;
-        }
-    }
-
-    HRESULT hr = CoCreateInstance(kCLSID_TaskbarList, nullptr,
-        CLSCTX_INPROC_SERVER, kIID_ITaskbarList3, (void**)&g_pTaskbarList);
-    Wh_Log(L"[DIAG] CoCreateInstance(CLSID_TaskbarList) hr=0x%08X", hr);
-    if (FAILED(hr) || !g_pTaskbarList) {
-        g_pTaskbarList = nullptr;
-        Wh_Log(L"ThumbBar: CoCreateInstance failed hr=0x%08X", hr);
-        return;
-    }
-    hr = g_pTaskbarList->HrInit();
-    Wh_Log(L"[DIAG] HrInit hr=0x%08X", hr);
-    if (FAILED(hr)) {
-        g_pTaskbarList->Release();
-        g_pTaskbarList = nullptr;
-        Wh_Log(L"ThumbBar: HrInit failed hr=0x%08X", hr);
-        return;
-    }
-
-    bool light = IsTaskbarLightTheme();
-    for (int i = 0; i < GLYPH_COUNT; i++) {
-        if (g_glyphIcons[i]) DestroyIcon(g_glyphIcons[i]);
-        g_glyphIcons[i] = CreateGlyphIcon(kGlyphCodepoints[i], light);
-    }
-
-    THUMBBUTTON btns[THUMB_SLOT_COUNT] = {};
-    ComputeThumbButtons(hwnd, true, btns);
-
-    hr = g_pTaskbarList->ThumbBarAddButtons(hwnd, THUMB_SLOT_COUNT, btns);
-    Wh_Log(L"[DIAG] ThumbBarAddButtons hr=0x%08X buttonsPassed=%d",
-        hr, (int)THUMB_SLOT_COUNT);
-    if (FAILED(hr)) {
-        g_pTaskbarList->Release();
-        g_pTaskbarList = nullptr;
-        Wh_Log(L"ThumbBar: ThumbBarAddButtons failed hr=0x%08X", hr);
-        return;
-    }
-    g_thumbButtonsAdded = true;
-    memcpy(g_thumbLast, btns, sizeof(btns));
-    Wh_Log(L"ThumbBar: %d buttons added to frame %p (iconic=%d fullscreen=%d)",
-        (int)THUMB_SLOT_COUNT, hwnd, (int)(IsIconic(hwnd) != FALSE),
-        (int)IsRdpFrameFullscreen(hwnd));
-}
-
-// Pushes only the slots whose flags, icon, or tooltip differ from what the
-// taskbar was last told. Idempotent, so all of its drivers — the frame's own
-// WM_SIZE, the overlay's poll, settings changes, fullscreen transitions,
-// status updates — can fire freely without chattering into explorer.exe.
-// `visible` false hides every button (they can never be removed — the API
-// is one-shot); that is how showThumbbar-off and teardown are expressed.
-void SyncThumbButtonsEx(HWND hwnd, bool visible) {
-    if (!g_pTaskbarList || !g_thumbButtonsAdded)
-        return;
-    THUMBBUTTON want[THUMB_SLOT_COUNT] = {};
-    ComputeThumbButtons(hwnd, visible, want);
-
-    THUMBBUTTON diff[THUMB_SLOT_COUNT] = {};
-    UINT n = 0;
-    for (int i = 0; i < THUMB_SLOT_COUNT; i++) {
-        const THUMBBUTTON& w = want[i];
-        const THUMBBUTTON& l = g_thumbLast[i];
-        if (w.dwFlags == l.dwFlags && w.hIcon == l.hIcon &&
-            wcscmp(w.szTip, l.szTip) == 0)
-            continue;
-        diff[n++] = w;
-    }
-    if (n == 0)
-        return;
-    HRESULT hr = g_pTaskbarList->ThumbBarUpdateButtons(hwnd, n, diff);
-    if (SUCCEEDED(hr))
-        memcpy(g_thumbLast, want, sizeof(want));
-    else
-        Wh_Log(L"ThumbBar: ThumbBarUpdateButtons(%u) failed hr=0x%08X", n, hr);
-}
-
-void SyncThumbButtons(HWND hwnd) {
-    SyncThumbButtonsEx(hwnd, g_showThumbbar);
-}
-
-// Routes THBN_CLICKED to the exact action paths the overlay button's zones
-// already use — no reimplementation.
-void OnThumbButtonClicked(HWND hwnd, UINT id) {
-    switch (id) {
-    case THUMB_ID_MINIMIZE:
-        MinimizeRdpFrame(L"ThumbBar Minimize clicked");
-        break;
-    case THUMB_ID_FSTOGGLE:
-        if (g_showFsToggle)
-            ToggleFullscreen(L"ThumbBar Fullscreen toggle clicked");
-        break;
-    case THUMB_ID_RECONNECT:
-        if (g_enableReconnect)
-            ReconnectSessionClean(hwnd, L"ThumbBar Reconnect clicked");
-        else
-            Wh_Log(L"ThumbBar Reconnect clicked while Reconnect is disabled "
-                   L"(enableReconnect off) — ignored");
-        break;
-    case THUMB_ID_STATUS:
-        // Indicator only — a click refreshes it and does nothing else.
-        SyncThumbButtons(hwnd);
-        break;
-    case THUMB_ID_RESTORE:
-        RestoreRdpFrame(L"ThumbBar Restore clicked");
-        break;
-    case THUMB_ID_DISCONNECT:
-        Wh_Log(L"ThumbBar Disconnect clicked");
-        DisconnectSession(hwnd);
-        break;
-    }
-}
-
-// Frame-thread teardown: hide the buttons, release the Apartment-model COM
-// pointer on its home thread, and balance the CoInitializeEx. hideButtons
-// is false on WM_DESTROY, where the taskbar button disappears with the
-// window anyway.
-void TeardownThumbBar(HWND hwnd, bool hideButtons) {
-    if (g_pTaskbarList) {
-        if (hideButtons)
-            SyncThumbButtonsEx(hwnd, false);
-        g_pTaskbarList->Release();
-        g_pTaskbarList = nullptr;
-    }
-    g_thumbButtonsAdded = false;
-    memset(g_thumbLast, 0, sizeof(g_thumbLast));
-    for (int i = 0; i < GLYPH_COUNT; i++) {
-        if (g_glyphIcons[i]) {
-            DestroyIcon(g_glyphIcons[i]);
-            g_glyphIcons[i] = nullptr;
-        }
-    }
-    for (int i = 0; i < TONE_COUNT; i++) {
-        if (g_statusIcons[i]) {
-            DestroyIcon(g_statusIcons[i]);
-            g_statusIcons[i] = nullptr;
-        }
-    }
-    if (g_comInitedByThumbBar) {
-        CoUninitialize();
-        g_comInitedByThumbBar = false;
-    }
-}
-
-// ── RDP frame subclass — taskbar thumbnail toolbar ───────────────────────
+// Since v0.9.0 the frame subclass exists for exactly two jobs, both of which
+// must run on this window's own thread:
+//   * WM_DESTROY — launch a parked reconnect plan, release the RDP control's
+//     event sink, restore the original wndproc, and publish one final
+//     "session gone" snapshot for the taskbar-embedded widget.
+//   * g_msgSinkTeardown — release the event sink at mod unload. The connection
+//     point is an STA object advised on mstsc's UI thread — the same thread
+//     that owns this frame — so Unadvise must happen here; Wh_ModUninit sends
+//     this message synchronously to reach it.
+// The taskbar thumbnail toolbar this subclass was originally built for is
+// gone (DECISIONS.md D-33), and its ITaskbarList3 state, its refresh/status
+// messages, and its WM_SIZE re-sync went with it. The sink teardown
+// deliberately did NOT: it used to be invoked alongside TeardownThumbBar on
+// both the WM_DESTROY and the mod-unload path, and it still fires on both,
+// now under its own message.
 
 // Defined in "RDP control event sink" below; the frame subclass is where its
 // home-thread teardown gets invoked.
@@ -2214,55 +1761,10 @@ LRESULT CALLBACK FrameSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     origProc = g_origFrameWndProc;
     LeaveCriticalSection(&g_cs);
 
-    if (g_msgTaskbarButtonCreated && msg == g_msgTaskbarButtonCreated) {
-        Wh_Log(L"[DIAG] TaskbarButtonCreated received for HWND=%p", hwnd);
-        // Microsoft's documented signal that ITaskbarList3 calls are now
-        // safe for this window — sent when the taskbar button is first
-        // created AND again whenever explorer.exe restarts, in which case
-        // the toolbar must be re-established from scratch.
-        g_taskbarButtonCreated = true;
-        if (g_showThumbbar)
-            CreateOrRefreshThumbBar(hwnd);
-        // fall through — mstsc may observe the message too
-    } else if (msg == WM_COMMAND && HIWORD(wParam) == THBN_CLICKED) {
-        UINT id = LOWORD(wParam);
-        Wh_Log(L"[DIAG] THBN_CLICKED received, id=%u", id);
-        if (IsThumbButtonId(id)) {
-            OnThumbButtonClicked(hwnd, id);
-            return 0;  // ours — don't feed synthetic command IDs to mstsc
-        }
-    } else if (msg == WM_SIZE) {
-        // Direct signal for this window's own minimize/restore and
-        // fullscreen/windowed transitions, on the exact thread the taskbar
-        // pointer lives on. The overlay's poll additionally posts
-        // g_msgThumbRefresh for transitions this might miss; both funnel
-        // into the same idempotent sync. Falls through to mstsc's handler.
-        SyncThumbButtons(hwnd);
-    } else if (g_msgThumbRefresh && msg == g_msgThumbRefresh) {
-        // Posted by the overlay's poll on a state change and by
-        // Wh_ModSettingsChanged on any settings change.
-        if (!g_showThumbbar) {
-            SyncThumbButtonsEx(hwnd, false);
-        } else if (!g_thumbButtonsAdded && g_taskbarButtonCreated) {
-            // showThumbbar was off when TaskbarButtonCreated arrived; the
-            // one-shot ThumbBarAddButtons was never spent for this taskbar
-            // button, so it is still legal now.
-            CreateOrRefreshThumbBar(hwnd);
-        } else {
-            SyncThumbButtons(hwnd);
-        }
-        return 0;
-    } else if (g_msgStatusRefresh && msg == g_msgStatusRefresh) {
-        // Posted by the helper thread's status timer when the status icon's
-        // tooltip text changed (and by status sources on a state change).
-        // The sync diffs again, so this is cheap when nothing moved.
-        SyncThumbButtons(hwnd);
-        return 0;
-    } else if (g_msgThumbTeardown && msg == g_msgThumbTeardown) {
-        // Sent synchronously by Wh_ModUninit so the COM teardown runs here,
-        // on the pointers' home thread — thumb bar and event sink alike.
+    if (g_msgSinkTeardown && msg == g_msgSinkTeardown) {
+        // Sent synchronously by Wh_ModUninit so the sink's Unadvise/Release
+        // runs here, on the connection point's home thread.
         UnadviseRdpEvents(L"mod unload");
-        TeardownThumbBar(hwnd, true);
         return 0;
     } else if (msg == WM_DESTROY) {
         // First thing: if a reconnect is parked, this is the moment — the
@@ -2270,7 +1772,6 @@ LRESULT CALLBACK FrameSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // fully alive.
         LaunchPendingReconnect();
         UnadviseRdpEvents(L"frame WM_DESTROY");
-        TeardownThumbBar(hwnd, false);
         if (origProc)
             SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
                 reinterpret_cast<LONG_PTR>(origProc));
@@ -2335,16 +1836,14 @@ POINT g_btnDragStart     = {};  // screen coords of the WM_LBUTTONDOWN
 POINT g_btnWindowStart   = {};  // window top-left (screen coords) at grab time
 
 // Last minimize / fullscreen state observed by the helper thread (paint or
-// poll timer), so the poll only triggers a repaint / thumb-bar nudge on an
-// actual change. Helper-thread-only, like the drag state above.
+// poll timer), so the poll only triggers a repaint on an actual change.
+// Helper-thread-only, like the drag state above.
 bool  g_lastIconic       = false;
 bool  g_lastFullscreen   = false;
 
-// Last status texts the helper thread acted on (overlay row repaint; thumb
-// tooltip nudge), so the 1 s status timer only does work on a real change.
-// Helper-thread-only.
+// Last overlay status text the helper thread acted on, so the 1 s status
+// timer only repaints on a real change. Helper-thread-only.
 wchar_t g_lastOverlayStatus[64] = {};
-wchar_t g_lastTooltipStatus[ARRAYSIZE(THUMBBUTTON::szTip)] = {};
 
 LRESULT CALLBACK BtnWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -2632,42 +2131,25 @@ LRESULT CALLBACK BtnWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 g_lastIconic     = iconic;
                 g_lastFullscreen = fullscreen;
                 InvalidateRect(hwnd, nullptr, TRUE);
-                // Nudge the taskbar thumb bar off the same poll — the actual
-                // COM work runs in FrameSubclassProc on the frame's thread,
-                // and is a no-op if the state already matches.
-                EnterCriticalSection(&g_cs);
-                HWND hFrame  = g_hRdpFrame;
-                bool frameSub = g_origFrameWndProc != nullptr;
-                LeaveCriticalSection(&g_cs);
-                if (frameSub && g_msgThumbRefresh && hFrame && IsWindow(hFrame))
-                    PostMessageW(hFrame, g_msgThumbRefresh, 0, 0);
+                // Before v0.9.0 this also nudged the taskbar thumb bar on the
+                // frame's thread. The taskbar-embedded panel needs no nudge:
+                // WriteLocalWidgetStatus (below, on the 1 s status tick and
+                // the watchdog poll) already samples iconic/fullscreen fresh,
+                // and the panel polls the snapshot once a second.
             }
         } else if (wParam == STATUS_TIMER_ID) {
-            // Session clock / idle display. Repaint the overlay row only
-            // when its second-granular text changed; nudge the thumb bar's
-            // status tooltip only when its minute-granular text changed.
-            // The frame thread's sync diffs once more, so the actual COM
-            // call into explorer.exe happens at most about once a minute.
-            // The same tick also publishes the taskbar-embedded widget's
-            // status snapshot (throttled inside; the watchdog's 1 s poll
-            // shares the writer).
+            // Session clock / idle display: repaint the overlay row only when
+            // its second-granular text actually changed. The same tick also
+            // publishes the taskbar-embedded widget's status snapshot
+            // (throttled inside; the watchdog's 1 s poll shares the writer),
+            // which is what carries the duration / idle / quality / hung
+            // detail to the panel's own status tooltip.
             WriteLocalWidgetStatus();
             wchar_t overlay[64];
             FormatOverlayStatus(overlay, ARRAYSIZE(overlay));
             if (wcscmp(overlay, g_lastOverlayStatus) != 0) {
                 wcscpy_s(g_lastOverlayStatus, overlay);
                 InvalidateRect(hwnd, nullptr, TRUE);
-            }
-            wchar_t tip[ARRAYSIZE(g_lastTooltipStatus)];
-            FormatStatusTooltip(tip, ARRAYSIZE(tip));
-            if (wcscmp(tip, g_lastTooltipStatus) != 0) {
-                wcscpy_s(g_lastTooltipStatus, tip);
-                EnterCriticalSection(&g_cs);
-                HWND hFrame  = g_hRdpFrame;
-                bool frameSub = g_origFrameWndProc != nullptr;
-                LeaveCriticalSection(&g_cs);
-                if (frameSub && g_msgStatusRefresh && hFrame && IsWindow(hFrame))
-                    PostMessageW(hFrame, g_msgStatusRefresh, 0, 0);
             }
         }
         return 0;
@@ -2776,8 +2258,8 @@ void CreateOrRepositionButton() {
     // Low-frequency poll so the minimize/restore zones track external
     // minimize/restore transitions this process is never notified about
     SetTimer(g_hBtn, ICONIC_TIMER_ID, ICONIC_POLL_MS, nullptr);
-    // 1 s status tick for the session clock row and the thumb-bar status
-    // tooltip; both paths only do work when their text actually changed.
+    // 1 s status tick for the session clock row and the taskbar-embedded
+    // panel's status snapshot; the repaint only happens on a real change.
     SetTimer(g_hBtn, STATUS_TIMER_ID, STATUS_POLL_MS, nullptr);
 
     pOrigShowWindow(g_hBtn, SW_SHOWNOACTIVATE);
@@ -2894,11 +2376,15 @@ void StopHelperThread() {
 // so it keeps working precisely when the frame thread does not. After the
 // configured number of consecutive hung seconds it shows a small topmost
 // alert at the top-center of the RDP monitor offering Force reconnect; it
-// NEVER reconnects on its own (DECISIONS.md D-18). The alert — not the
-// thumbnail toolbar — is the action surface on purpose: THBN_CLICKED is
-// delivered to the frame's (hung) thread, so a thumb-bar button could not be
-// clicked exactly when it matters. The thumb bar's status icon still turns
-// to the alert tone once the frame thread is alive to process the refresh.
+// NEVER reconnects on its own (DECISIONS.md D-18). The alert is its own
+// topmost window on purpose, and always was: a surface whose clicks are
+// delivered to the frame's (hung) thread could not be used at the one moment
+// it matters. That reasoning originally set it apart from the taskbar
+// thumbnail toolbar (whose THBN_CLICKED went to that very thread); it applies
+// just as directly to the taskbar-embedded panel, whose clicks reach mstsc as
+// a WM_COPYDATA the hung thread would likewise never pump. The hung state
+// still reaches the panel, because the snapshot writer below runs on this
+// watchdog's own thread.
 //
 // Force reconnect: build the plan → park it → post WM_CLOSE → wait a bounded
 // grace period for a clean close (then WM_DESTROY relaunches, as for the
@@ -3551,7 +3037,7 @@ void SendRelayTestMinimize() {
 // command and fails closed if it is absent, malformed, or different. The
 // fixed-layout payload carries a magic and version so a stray WM_COPYDATA
 // can never be mistaken for a command. Each command routes to the exact
-// shared action function the thumbnail toolbar already uses.
+// shared action function every other surface already uses.
 //
 // UIPI: no ChangeWindowMessageFilterEx on this window. If mstsc ever runs
 // elevated, WM_COPYDATA from the medium-integrity widget is blocked and the
@@ -3627,7 +3113,7 @@ LRESULT CALLBACK LocalWidgetWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             return FALSE;
         Wh_Log(L"LocalWidget: command 0x%02X from pid=%u", cmd, senderPid);
 
-        // Every case is the thumbnail toolbar's own action function; the
+        // Every case is one of this branch's shared action functions; the
         // actions check live state themselves and are idempotent, so no
         // mutual exclusion against the other UI surfaces is needed.
         switch (cmd) {
@@ -3639,7 +3125,7 @@ LRESULT CALLBACK LocalWidgetWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             ToggleFullscreen(L"Local widget Fullscreen toggle");
             return TRUE;
         case LWCMD_RECONNECT: {
-            // The same gate as the thumb bar's Reconnect (D-28): the widget
+            // The same gate every Reconnect surface uses (D-28): the widget
             // hides its button on this setting too, but the receiver is the
             // authority for what actually relaunches.
             if (!g_enableReconnect) {
@@ -3909,7 +3395,8 @@ public:
             Wh_Log(L"RdpEvents: OnDisconnected reason=%ld — quality cleared", reason);
             NotifyStatusChanged();
         } else if (dispIdMember == g_dispidEnterFs || dispIdMember == g_dispidLeaveFs) {
-            // The thumb bar's toggle tooltip/icon follow the real transition.
+            // Repaint the overlay on the real transition; the panel's own
+            // fullscreen button relabels off the next status snapshot.
             Wh_Log(L"RdpEvents: %s", dispIdMember == g_dispidEnterFs
                 ? L"OnEnterFullScreenMode" : L"OnLeaveFullScreenMode");
             NotifyStatusChanged();
@@ -4295,10 +3782,13 @@ HWND WINAPI CreateWindowExW_Hook(
 
     // Phase 1: latch the RDP frame directly when mstsc creates its main
     // window, independent of the connection bar (which is fullscreen-only) —
-    // the taskbar thumbnail toolbar must also work for windowed sessions.
-    // The bar-triggered path below is kept unchanged; for the same session
-    // it re-latches the same frame handle.
-    if (hwnd && (g_hideBar || g_showOverlay || g_showThumbbar) && IsTscFrameClass(lpClassName, hwnd)) {
+    // windowed sessions must be tracked too, for the session clock, the
+    // status snapshot the taskbar-embedded panel reads, and the reconnect
+    // helper's WM_DESTROY launch point. The bar-triggered path below is kept
+    // unchanged; for the same session it re-latches the same frame handle.
+    // The showThumbbar term is gone with the thumbnail toolbar (D-33); only
+    // hideBar and showOverlay gate this now.
+    if (hwnd && (g_hideBar || g_showOverlay) && IsTscFrameClass(lpClassName, hwnd)) {
         Wh_Log(L"[DIAG] RDP frame class matched, HWND=%p", hwnd);
 
         EnterCriticalSection(&g_cs);
@@ -4329,13 +3819,7 @@ HWND WINAPI CreateWindowExW_Hook(
             // Session clock starts here — the connection-detection point.
             g_sessionStartTick.store(GetTickCount64());
 
-            // If mstsc ever runs elevated, let the taskbar's medium-IL
-            // TaskbarButtonCreated message through UIPI.
-            if (g_msgTaskbarButtonCreated)
-                ChangeWindowMessageFilterEx(hwnd, g_msgTaskbarButtonCreated,
-                    MSGFLT_ALLOW, nullptr);
-
-            Wh_Log(L"RDP frame detected HWND=%p — subclassed for thumb bar", hwnd);
+            Wh_Log(L"RDP frame detected HWND=%p — subclassed", hwnd);
             LogRdpEventsDiag(L"frame created");
         }
     }
@@ -4434,13 +3918,9 @@ BOOL ModInit() {
     GetModStorageDir();
 
     // Registered before any hook is installed, so the frame subclass only
-    // ever sees these fully initialized. TaskbarButtonCreated is Microsoft's
-    // documented signal that ITaskbarList3 calls are safe for a window; the
-    // other two are this mod's private frame-thread requests.
-    g_msgTaskbarButtonCreated = RegisterWindowMessageW(L"TaskbarButtonCreated");
-    g_msgThumbRefresh  = RegisterWindowMessageW(L"WH_RdpstkClient_ThumbRefresh");
-    g_msgThumbTeardown = RegisterWindowMessageW(L"WH_RdpstkClient_ThumbTeardown");
-    g_msgStatusRefresh = RegisterWindowMessageW(L"WH_RdpstkClient_StatusRefresh");
+    // ever sees it fully initialized. This mod's private frame-thread request
+    // to release the RDP control's event sink on its home thread.
+    g_msgSinkTeardown = RegisterWindowMessageW(L"WH_RdpstkClient_SinkTeardown");
 
     bool dragOnRight, dragAtBottom;
     int  dragDx, dragDy;
@@ -4501,8 +3981,8 @@ BOOL ModInit() {
     InstallMstscaxFactoryHooks();
 
     // The relay receiver exists for the whole mod lifetime, independent of
-    // the overlay/thumbbar visibility settings — toolkit components must be
-    // able to reach it whenever the mod is loaded.
+    // the overlay visibility setting — toolkit components must be able to
+    // reach it whenever the mod is loaded.
     StartRelayThread();
 
     // The taskbar-embedded widget's local command receiver: a second,
@@ -4513,25 +3993,23 @@ BOOL ModInit() {
     StartLocalWidgetThread();
 
     // The helper thread owns the floating overlay window only — start it iff
-    // the overlay is enabled. The thumbnail toolbar lives on the frame's own
-    // thread and needs no helper thread.
+    // the overlay is enabled.
     if (g_showOverlay)
         StartHelperThread();
 
-    // The stuck-session watchdog is independent of both visibility flags: its
+    // The stuck-session watchdog is independent of the overlay setting: its
     // alert is its own window, and it must keep running when the frame thread
     // can't.
     if (g_stuckDetection)
         StartWatchdogThread();
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.8.0 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.0 initialized "
            L"[mstsc.exe branch] — "
-           L"hide=%d overlay=%d thumbbar=%d hotkey=%d fade=%d hostname=%d "
-           L"fsToggle=%d sessionInfo=%d quality=%d reconnect=%d(mode=%d) "
-           L"stuck=%d(threshold=%ds)",
-           (int)g_hideBar, (int)g_showOverlay, (int)g_showThumbbar,
+           L"hide=%d overlay=%d hotkey=%d fade=%d hostname=%d "
+           L"sessionInfo=%d reconnect=%d(mode=%d) stuck=%d(threshold=%ds)",
+           (int)g_hideBar, (int)g_showOverlay,
            (int)g_enableHotkey, (int)g_fadeWhenIdle, (int)g_showHostname,
-           (int)g_showFsToggle, (int)g_showSessionInfo, (int)g_showNetQuality,
+           (int)g_showSessionInfo,
            (int)g_enableReconnect, g_reconnectMode,
            (int)g_stuckDetection, g_stuckThresholdSec);
     return TRUE;
@@ -4582,8 +4060,6 @@ void ModSettingsChanged() {
 
     EnterCriticalSection(&g_cs);
     HWND hBBar = g_hBBar;
-    HWND hFrame = g_hRdpFrame;
-    bool frameSub = g_origFrameWndProc != nullptr;
     LeaveCriticalSection(&g_cs);
 
     if (hBBar && IsWindow(hBBar)) {
@@ -4593,18 +4069,17 @@ void ModSettingsChanged() {
             PostThreadMessageW(helperThreadId, WM_CREATE_BTN, 0, 0);
     }
 
-    // Sync taskbar thumb bar visibility with the (possibly toggled)
-    // showThumbbar setting — handled on the frame's own thread. The refresh
-    // handler reads g_showThumbbar live, so it covers both on→off and off→on.
-    if (frameSub && g_msgThumbRefresh && hFrame && IsWindow(hFrame))
-        PostMessageW(hFrame, g_msgThumbRefresh, 0, 0);
+    // Nothing to push to the frame's thread any more: the thumbnail toolbar
+    // that needed a per-settings-change re-sync there is gone (D-33), and the
+    // taskbar-embedded panel reloads its own settings in the explorer.exe
+    // branch's Wh_ModSettingsChanged.
 
-    Wh_Log(L"Settings reloaded [mstsc.exe branch] — hide=%d overlay=%d thumbbar=%d hotkey=%d fade=%d hostname=%d "
-           L"fsToggle=%d sessionInfo=%d quality=%d reconnect=%d(mode=%d) "
+    Wh_Log(L"Settings reloaded [mstsc.exe branch] — hide=%d overlay=%d hotkey=%d "
+           L"fade=%d hostname=%d sessionInfo=%d reconnect=%d(mode=%d) "
            L"stuck=%d(threshold=%ds)",
-           (int)g_hideBar, (int)g_showOverlay, (int)g_showThumbbar,
+           (int)g_hideBar, (int)g_showOverlay,
            (int)g_enableHotkey, (int)g_fadeWhenIdle, (int)g_showHostname,
-           (int)g_showFsToggle, (int)g_showSessionInfo, (int)g_showNetQuality,
+           (int)g_showSessionInfo,
            (int)g_enableReconnect, g_reconnectMode,
            (int)g_stuckDetection, g_stuckThresholdSec);
 }
@@ -4649,16 +4124,19 @@ void ModUninit() {
     WNDPROC origFrame = g_origFrameWndProc;
     LeaveCriticalSection(&g_cs);
 
-    // Thumb bar teardown must run on the frame's own thread — the
-    // TaskbarList object is ThreadingModel=Apartment, so its pointer is
-    // released where it was created. Ask the still-installed subclass
+    // The RDP control's event sink must be released on the frame's own
+    // thread — the connection point is an STA object advised there, so
+    // Unadvise/Release has to happen where it was created (UnadviseRdpEvents
+    // refuses to run anywhere else). Ask the still-installed subclass
     // synchronously, then restore the original wndproc. A hung frame thread
-    // only costs the timeout: better a leaked pointer at unload than a
-    // blocked unload or a cross-apartment Release.
+    // only costs the timeout: better a leaked reference at unload than a
+    // blocked unload or a cross-apartment Release. This is the mod-unload
+    // half of the two UnadviseRdpEvents paths; the frame's own WM_DESTROY is
+    // the other, and both survived the thumbnail toolbar's removal (D-33).
     if (hFrame && origFrame && IsWindow(hFrame)) {
         DWORD_PTR result = 0;
-        if (g_msgThumbTeardown)
-            SendMessageTimeoutW(hFrame, g_msgThumbTeardown, 0, 0,
+        if (g_msgSinkTeardown)
+            SendMessageTimeoutW(hFrame, g_msgSinkTeardown, 0, 0,
                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &result);
         SetWindowLongPtrW(hFrame, GWLP_WNDPROC,
             reinterpret_cast<LONG_PTR>(origFrame));
@@ -4710,6 +4188,19 @@ struct ModSettings {
     // (D-28) is readable here too: the panel hides its Reconnect button when
     // the receiver would refuse the command anyway.
     bool reconnectEnabled = false;
+    // Three more settings the mstsc branch used to own, read here since
+    // v0.9.0 for exactly the same reason (D-33): the taskbar-embedded panel
+    // is now the only surface that presents any of them, so the branch that
+    // draws them is the branch that reads them.
+    //   showSessionInfo       -> the duration / idle lines of the status
+    //                            element's tooltip
+    //   showConnectionQuality -> the quality / bandwidth / rtt line of it
+    //   showFullscreenToggle  -> whether the fullscreen button is on the row
+    // The mstsc branch keeps reading showSessionInfo for its own floating
+    // overlay row; it is simply read in both places.
+    bool showSessionInfo = true;
+    bool showConnectionQuality = true;
+    bool fullscreenToggleEnabled = true;
     WidgetPosition widgetPosition = WidgetPosition::Right;
 } g_Settings;
 
@@ -4719,6 +4210,11 @@ void LoadSettings() {
     g_Settings.offsetX           = Wh_GetIntSetting(L"embeddedOffsetX");
     g_Settings.showWhenNoSession = Wh_GetIntSetting(L"embeddedShowWhenNoSession") != 0;
     g_Settings.reconnectEnabled  = Wh_GetIntSetting(L"enableReconnect") != 0;
+    g_Settings.showSessionInfo   = Wh_GetIntSetting(L"showSessionInfo") != 0;
+    g_Settings.showConnectionQuality =
+        Wh_GetIntSetting(L"showConnectionQuality") != 0;
+    g_Settings.fullscreenToggleEnabled =
+        Wh_GetIntSetting(L"showFullscreenToggle") != 0;
     if (g_Settings.panelWidth <= 0) g_Settings.panelWidth = 340;
     if (g_Settings.fontSize  <= 0) g_Settings.fontSize = 11;
     if (g_Settings.offsetX   <  0) g_Settings.offsetX = 8;
@@ -4806,6 +4302,87 @@ WidgetState ReadWidgetState() {
 // QualityLabel and FormatClock are shared contracts now — defined once above
 // the branch namespaces.
 
+// The rich status tooltip, migrated from the thumbnail toolbar's status icon
+// (D-33). The original — FormatStatusTooltip in the mstsc.exe branch — could
+// not be called from here: it read that process's own globals (session start
+// tick, GetLastInputInfo, the quality atomics, the watchdog flags), none of
+// which exist in explorer.exe. Every one of those values, however, is already
+// in the status snapshot this branch reads once a second, so the tooltip is
+// rebuilt here from the snapshot instead, line for line:
+//
+//   Session 1h 23m · this PC idle 4m
+//   Quality 3/4 (Good) · bandwidth 4096 · rtt 32 ms
+//   NOT RESPONDING for 14 s — …
+//
+// Same gating as the original (showSessionInfo / showConnectionQuality; the
+// hung line needs no stuckDetection check because the writer only ever sets
+// `hung` while that setting is on), same "say so rather than invent a value"
+// discipline for quality, and the same fallback line when nothing applies.
+// The one addition the original had no need for: this surface is alive while
+// no session is, so a missing or stale snapshot gets an honest line of its
+// own rather than an empty tooltip.
+void FormatEmbeddedStatusTooltip(const WidgetState& st, wchar_t* out, size_t cch) {
+    out[0] = L'\0';
+
+    if (!st.active) {
+        if (st.hasSnapshot && st.stale)
+            swprintf_s(out, cch,
+                L"No Remote Desktop session.\nThe last status update from the "
+                L"client was %llu s ago, so it is no longer trusted.",
+                st.ageMs / 1000);
+        else if (st.hasSnapshot)
+            wcscpy_s(out, cch, L"No Remote Desktop session is open.");
+        else if (st.receiverFound)
+            wcscpy_s(out, cch,
+                L"No Remote Desktop session. The client mod is running in "
+                L"mstsc.exe but has not written a status snapshot yet.");
+        else
+            wcscpy_s(out, cch,
+                L"No Remote Desktop session, and no mstsc.exe running this "
+                L"mod to report one.");
+        return;
+    }
+
+    if (g_Settings.showSessionInfo) {
+        wchar_t dur[32], idle[32];
+        FormatCoarse(st.s.sessionDurationMs, dur, ARRAYSIZE(dur));
+        FormatCoarse(st.s.localIdleMs, idle, ARRAYSIZE(idle));
+        swprintf_s(out, cch, L"Session %s \xB7 this PC idle %s", dur, idle);
+    }
+
+    if (g_Settings.showConnectionQuality) {
+        wchar_t line[160];
+        int q = st.s.quality;
+        if (!st.s.qualityAvailable)
+            wcscpy_s(line, L"Quality: unavailable \x2014 the client mod did not "
+                           L"hook the RDP control (reopen the session)");
+        else if (q < 1 || q > 4)
+            wcscpy_s(line, L"Quality: waiting for Remote Desktop's first report");
+        else
+            swprintf_s(line, ARRAYSIZE(line),
+                L"Quality %d/4 (%s) \xB7 bandwidth %ld \xB7 rtt %ld ms",
+                q, QualityLabel(q), st.s.bandwidth, st.s.rtt);
+        if (out[0]) wcscat_s(out, cch, L"\n");
+        wcscat_s(out, cch, line);
+    }
+
+    if (st.s.hung) {
+        wchar_t line[160];
+        if (g_Settings.reconnectEnabled)
+            swprintf_s(line, ARRAYSIZE(line),
+                L"NOT RESPONDING for %d s \x2014 use the alert on the session's "
+                L"own screen to force reconnect", st.s.hungSeconds);
+        else
+            swprintf_s(line, ARRAYSIZE(line),
+                L"NOT RESPONDING for %d s", st.s.hungSeconds);
+        if (out[0]) wcscat_s(out, cch, L"\n");
+        wcscat_s(out, cch, line);
+    }
+
+    if (!out[0])
+        wcscpy_s(out, cch, L"RDP Session Toolkit");
+}
+
 PCWSTR LabelForCommand(BYTE cmd) {
     switch (cmd) {
     case LWCMD_MINIMIZE:          return L"Minimize";
@@ -4819,9 +4396,10 @@ PCWSTR LabelForCommand(BYTE cmd) {
 
 // Single source of truth for whether an action element is available, derived
 // from the same status-file state — used both to enable/disable/relabel the
-// always-visible elements and to re-check a click before it is sent (mirrors
-// the thumbnail toolbar's ComputeThumbButtons single-source-of-truth pattern,
-// DECISIONS.md D-19).
+// always-visible elements and to re-check a click before it is sent. The
+// one-function-decides-every-slot discipline is inherited from the thumbnail
+// toolbar's ComputeThumbButtons (DECISIONS.md D-19); that surface is gone
+// (D-33), the discipline stays.
 bool CommandEnabledForState(const WidgetState& st, BYTE cmd) {
     bool a = st.active, iconic = a && st.s.iconic;
     switch (cmd) {
@@ -4971,10 +4549,10 @@ void GrantForegroundRightToReceiver(PCWSTR label) {
     }
 }
 
-// Re-checks the command against the freshest state before sending — the same
-// click-time re-check discipline as the thumbnail toolbar (DECISIONS.md
-// D-8/D-12/D-19), so a stale XAML IsEnabled can never let a disallowed command
-// through.
+// Re-checks the command against the freshest state before sending — the
+// click-time re-check discipline established with the thumbnail toolbar
+// (DECISIONS.md D-8/D-12/D-19) and kept after it was removed (D-33), so a
+// stale XAML IsEnabled can never let a disallowed command through.
 void OnSendCommand(BYTE cmd) {
     WidgetState st;
     {
@@ -5071,6 +4649,11 @@ void StopStatusThread() {
 constexpr std::wstring_view kWidgetRootName   = L"RdpstkEmbedWidgetRoot";
 constexpr std::wstring_view kHostNameName     = L"RdpstkEmbedHostName";
 constexpr std::wstring_view kStatusLineName   = L"RdpstkEmbedStatusLine";
+// The whole host-name + status-line column. Named only so ApplyStateToWidget
+// can reach it to refresh the rich status tooltip (D-33) — the tooltip covers
+// the column, not just the one line of text, so hovering anywhere over the
+// panel's text shows it.
+constexpr std::wstring_view kStatusColumnName = L"RdpstkEmbedStatusColumn";
 constexpr std::wstring_view kMinimizeName     = L"RdpstkEmbedMinimize";
 constexpr std::wstring_view kRestoreName      = L"RdpstkEmbedRestore";
 constexpr std::wstring_view kFullscreenName   = L"RdpstkEmbedFullscreen";
@@ -5226,6 +4809,28 @@ SolidColorBrush MakeBrush(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
     return SolidColorBrush(ColorHelper::FromArgb(a, r, g, b));
 }
 
+// Attaches (or updates) a wrapping, multi-line tooltip on an element. An
+// existing ToolTip's TextBlock is reused rather than replaced, so the
+// once-a-second status refresh does not build XAML objects on every tick and
+// does not disturb a tooltip the user currently has open. UI thread only.
+void SetElementTooltip(DependencyObject const& target, PCWSTR text) {
+    try {
+        if (auto tip = ToolTipService::GetToolTip(target).try_as<ToolTip>()) {
+            if (auto tb = tip.Content().try_as<TextBlock>()) {
+                if (tb.Text() != text)
+                    tb.Text(text);
+                return;
+            }
+        }
+        TextBlock tb;
+        tb.Text(text);
+        tb.TextWrapping(TextWrapping::Wrap);
+        ToolTip tip;
+        tip.Content(tb);
+        ToolTipService::SetToolTip(target, tip);
+    } WH_CATCH(L"SetElementTooltip")
+}
+
 // ── Widget ────────────────────────────────────────────────────────────────
 
 void UpdateWidgetMargin(const wchar_t* reason);
@@ -5322,6 +4927,16 @@ void ApplyStateToWidget(Grid widget) {
                                            : MakeBrush(0xB3, 0xFF, 0xFF, 0xFF));
     }
 
+    // The rich status tooltip the thumbnail toolbar's status icon used to
+    // carry (D-33): session duration, this PC's idle time, connection quality
+    // with bandwidth and round-trip time, and the not-responding warning —
+    // all of it detail the one-line status text above has no room for.
+    if (auto col = FindByName<FrameworkElement>(widget, kStatusColumnName)) {
+        wchar_t tip[512];
+        FormatEmbeddedStatusTooltip(st, tip, ARRAYSIZE(tip));
+        SetElementTooltip(col, tip);
+    }
+
     auto setButton = [&](std::wstring_view name, BYTE cmd) {
         auto btn = FindByName<Button>(widget, name);
         if (!btn) return;
@@ -5336,14 +4951,20 @@ void ApplyStateToWidget(Grid widget) {
     setButton(kDisconnectName, LWCMD_DISCONNECT);
 
     // Reconnect is opt-in (D-28): the button is removed from the row, not
-    // merely dimmed, while the setting is off — matching the thumb bar,
-    // which hides its slot.
+    // merely dimmed, while the setting is off — the same treatment the thumb
+    // bar gave its slot.
     if (auto btn = FindByName<Button>(widget, kReconnectName))
         btn.Visibility(g_Settings.reconnectEnabled ? Visibility::Visible
                                                    : Visibility::Collapsed);
 
-    // Relabels itself from the session's real state, same as the thumbnail
-    // toolbar's Fullscreen/windowed button (DECISIONS.md D-14/D-19).
+    // showFullscreenToggle is read here since v0.9.0 (D-33): this panel is
+    // the only surface left that offers the toggle, so it is the surface that
+    // honors the setting — same removed-from-the-row treatment as Reconnect.
+    if (auto btn = FindByName<Button>(widget, kFullscreenName))
+        btn.Visibility(g_Settings.fullscreenToggleEnabled ? Visibility::Visible
+                                                          : Visibility::Collapsed);
+
+    // Relabels itself from the session's real state (DECISIONS.md D-14/D-19).
     if (auto btn = FindByName<Button>(widget, kFullscreenName)) {
         wchar_t glyph[2] = { fullscreen ? (wchar_t)0xE73F : (wchar_t)0xE740, 0 };
         btn.Content(box_value(hstring{ glyph }));
@@ -5454,11 +5075,15 @@ Grid BuildWidget() {
     statusLine.MaxLines(1);
     textCol.Children().Append(statusLine);
 
+    textCol.Name(kStatusColumnName);
+    // Seeded here; ApplyStateToWidget replaces the text on every 1 s poll with
+    // the live duration / idle / quality / not-responding detail (D-33).
+    SetElementTooltip(textCol, L"RDP Session Toolkit");
     Grid::SetColumn(textCol, 0);
     layout.Children().Append(textCol);
 
     // Five always-visible action buttons — same glyphs, order, and
-    // enable/relabel rules as the thumbnail toolbar's slots (DECISIONS.md
+    // enable/relabel rules the thumbnail toolbar's slots had (DECISIONS.md
     // D-19), sent over the local command channel unchanged (D-23).
     layout.Children().Append(MakeActionButton(kMinimizeName, 0xE921,
         L"Minimize the RDP session", LWCMD_MINIMIZE, 1));
@@ -5699,11 +5324,15 @@ BOOL ModInit() {
         PollForTaskbarViewDll();
     }
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.8.0 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.0 initialized "
            L"[explorer.exe branch — taskbar-embedded panel] — "
-           L"position=%d width=%d showWhenNoSession=%d reconnect=%d",
+           L"position=%d width=%d showWhenNoSession=%d reconnect=%d "
+           L"fsToggle=%d sessionInfo=%d quality=%d",
            (int)g_Settings.widgetPosition, g_Settings.panelWidth,
-           (int)g_Settings.showWhenNoSession, (int)g_Settings.reconnectEnabled);
+           (int)g_Settings.showWhenNoSession, (int)g_Settings.reconnectEnabled,
+           (int)g_Settings.fullscreenToggleEnabled,
+           (int)g_Settings.showSessionInfo,
+           (int)g_Settings.showConnectionQuality);
     return TRUE;
 }
 
@@ -5761,9 +5390,13 @@ void ModSettingsChanged() {
     } catch (...) {}
 
     Wh_Log(L"Settings reloaded [explorer.exe branch] — position=%d width=%d "
-           L"showWhenNoSession=%d reconnect=%d",
+           L"showWhenNoSession=%d reconnect=%d fsToggle=%d sessionInfo=%d "
+           L"quality=%d",
            (int)g_Settings.widgetPosition, g_Settings.panelWidth,
-           (int)g_Settings.showWhenNoSession, (int)g_Settings.reconnectEnabled);
+           (int)g_Settings.showWhenNoSession, (int)g_Settings.reconnectEnabled,
+           (int)g_Settings.fullscreenToggleEnabled,
+           (int)g_Settings.showSessionInfo,
+           (int)g_Settings.showConnectionQuality);
 }
 
 } // namespace embedded
@@ -5780,7 +5413,7 @@ BOOL Wh_ModInit() {
     case HostProcess::Explorer:
         return embedded::ModInit();
     default:
-        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.8.0 loaded in a process "
+        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.0 loaded in a process "
                L"that is neither mstsc.exe nor explorer.exe — inert no-op");
         return TRUE;
     }

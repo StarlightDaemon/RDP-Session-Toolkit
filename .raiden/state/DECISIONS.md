@@ -940,3 +940,139 @@ Verified: both mods (client v0.8.0 and host v0.2.0) compile **and link** clean
 through the updated script (exit 0); and an isolated source with an undefined
 symbol compiles `rc=0` but links `exit 1`, confirming the new step catches
 exactly the class of defect a compile-only check missed.
+
+## D-33: the taskbar thumbnail toolbar is removed; its rich status tooltip moves to the taskbar-embedded panel
+
+**Date:** 2026-09-01. **Client mod v0.8.0 → v0.9.0.**
+
+### What was removed
+
+The whole mstsc.exe-side **taskbar thumbnail toolbar** — the buttons under the
+mstsc taskbar hover preview, added in the upstream mod at v1.1.9 and carried
+through the fork ever since. Concretely: the `ITaskbarList3` usage
+(`CLSID_TaskbarList` / `IID_ITaskbarList3` literals, the `CoInitializeEx` /
+`CoUninitialize` balance, `ThumbBarAddButtons` / `ThumbBarUpdateButtons`), the
+`ThumbSlot` / `THUMB_ID_*` slot model, the Segoe MDL2 glyph-to-`HICON`
+rendering (`CreateGlyphIconColor` and its coverage-as-alpha conversion) and the
+`StatusTone` colour table it fed, `IsTaskbarLightTheme`, the diff-based
+`SyncThumbButtons` / `ComputeThumbButtons` / `CreateOrRefreshThumbBar` /
+`TeardownThumbBar` machinery, the `TaskbarButtonCreated` / `ThumbRefresh` /
+`StatusRefresh` registered messages and their `FrameSubclassProc` handlers
+(including the `WM_SIZE` re-sync and the `THBN_CLICKED` routing), the
+`ChangeWindowMessageFilterEx` UIPI allowance for `TaskbarButtonCreated`, the
+`showThumbbar` setting, and `FormatStatusTooltip`.
+
+### Why
+
+The taskbar-embedded panel (D-21/D-26) offers **the same five actions** —
+Minimize, Restore, fullscreen toggle, Reconnect, Disconnect — with the **same
+enable / disable / relabel rules** driven by the same session state, always
+visible rather than hover-only, and covering windowed sessions equally. The
+thumbnail toolbar was therefore a second copy of one UI: two surfaces to keep
+behaviourally in sync, two sets of state pushes, two places to change for every
+future action. Reducing that to one is the point of this change. The toolbar
+also carried real cost the panel does not: an Apartment-model COM pointer
+pinned to mstsc's UI thread, a one-shot `ThumbBarAddButtons` API whose "buttons
+can never be added, removed or reordered" constraint forced the
+add-everything-then-hide design, hand-rendered icons, and an explorer-restart
+re-establishment path. None of it was ever confirmed working live (LOOP-001,
+LOOP-007).
+
+### What was deliberately preserved
+
+- **Every shared action function is untouched**: `MinimizeRdpFrame`,
+  `RestoreRdpFrame`, `ToggleFullscreen`, the reconnect helpers
+  (`BuildReconnectPlan` / `LaunchReconnect` / `ReconnectSessionClean` /
+  `LaunchPendingReconnect` / `ForceReconnectSession`) and `DisconnectSession`.
+  The floating overlay and the local-widget command receiver call these
+  directly and behave exactly as before.
+- **`UnadviseRdpEvents` still fires on both of its paths.** This was the one
+  real trap in the removal. The connection-quality sink teardown was invoked
+  *alongside* `TeardownThumbBar` in two places: the frame's `WM_DESTROY`
+  handler, and the `g_msgThumbTeardown` handler that `Wh_ModUninit` reached
+  with a synchronous `SendMessageTimeoutW`. Deleting the thumb-bar teardown
+  would have silently taken the mod-unload path's Unadvise with it — the sink
+  is an STA object advised on mstsc's UI thread, and `UnadviseRdpEvents`
+  refuses to run anywhere else, so no other thread could have covered for it.
+  The message is therefore **kept and renamed** to `g_msgSinkTeardown`
+  (`WH_RdpstkClient_SinkTeardown`), its handler now calls `UnadviseRdpEvents`
+  alone, and `Wh_ModUninit` sends that message with the same timeout and the
+  same "a hung frame thread only costs the timeout" reasoning. `WM_DESTROY`
+  keeps its call unchanged. The frame subclass survives purely for these two
+  jobs, plus the reconnect launch point and the final status write.
+- **The connection-quality event sink itself**, the stuck-session watchdog, the
+  relay receiver, the local-widget command receiver, the status-snapshot
+  writer, and the floating overlay — all unchanged in behaviour.
+
+### The tooltip migration (the detail that would otherwise have been lost)
+
+`FormatStatusTooltip` built the thumb-bar status icon's tooltip — session
+duration, this PC's local input idle time, connection quality with bandwidth
+and round-trip time, and the not-responding warning. It could not be moved: it
+read mstsc-side globals (`g_sessionStartTick`, `GetLastInputInfo`, the `g_net*`
+atomics, `g_sessionHung` / `g_hungSeconds`) that do not exist in explorer.exe.
+
+Every one of those values is, however, already published in the
+`LocalWidgetStatus` snapshot the panel reads once a second. So an equivalent
+`FormatEmbeddedStatusTooltip` was **built in the explorer.exe branch**,
+reconstructing the same lines from `sessionDurationMs`, `localIdleMs`,
+`quality`, `bandwidth`, `rtt`, `qualityAvailable`, `hung` and `hungSeconds`,
+with the same gating and the same never-invent-a-value discipline (D-16). It is
+attached to the panel's host-name / status-text column and refreshed in place
+on every poll — the existing `ToolTip`'s `TextBlock` is reused, so no XAML
+objects are built per tick and a tooltip the user has open is not disturbed.
+One line the original had no need for was added: this surface is alive while no
+session is, so a missing or stale snapshot now gets an honest explanation
+instead of an empty tooltip.
+
+`FormatCoarse` ("1h 23m") moved up to the shared-contracts section for it; the
+explorer branch is now its only caller.
+
+### Three settings changed owner rather than being deleted
+
+`showConnectionQuality`, `showSessionInfo` (its tooltip half) and
+`showFullscreenToggle` gated thumb-bar presentation. Deleting the toolbar would
+have left them gating nothing. They are now read by the **explorer.exe
+branch**, which is the surface that presents all three — the same
+one-setting-read-by-the-owning-branch pattern `enableReconnect` already used
+(D-28). `showSessionInfo` is read in both branches: the mstsc branch still uses
+it for the floating overlay's own status row. `showFullscreenToggle` now
+collapses the panel's fullscreen button, exactly as `enableReconnect` collapses
+its Reconnect button. `showThumbbar` itself is gone.
+
+### Action-button tooltips
+
+Each of the panel's five buttons gained a short plain-language tooltip saying
+what the click actually does to the session — that Minimize leaves the session
+connected and only clears the screen, that Disconnect leaves your programs
+running on the remote machine, that the fullscreen toggle sends Remote
+Desktop's own Ctrl+Alt+Break rather than reimplementing anything — instead of
+restating the button's own name. The fullscreen tooltip is rewritten together
+with the label on every state change, so it never describes the wrong
+direction.
+
+### Verification
+
+`compile-check.ps1` passes end to end: compile, **real link** to a DLL with the
+mod's own `@compilerOptions` (D-32), and the settings-block YAML validator
+(D-20) — which matters here because the `showThumbbar` entry was removed from
+that block and six `$description` values were rewritten.
+
+**No `@compilerOptions` entry became unused**, and this was checked rather than
+assumed. Two ways: dropping each `-l…` in turn from the link of the new object
+gives exactly the same required/droppable split as dropping it from a link of a
+pre-change object built from `HEAD`; and the DLL-name strings in the two linked
+binaries are identical (`advapi32`, `bcrypt`, `gdi32`, `ole32`, `oleaut32`,
+`shcore`, `user32`, and the WinRT api-sets). Nothing this change removed was
+the last user of any library — `ole32` / `oleaut32` are still reached by the
+event sink's `CoCreateInstance` hook, `StringFromGUID2`, `LoadRegTypeLib` and
+the `VARIANT` helpers; `advapi32` by the shared-secret registry access; `gdi32`
+by the overlay and alert painting. `@compilerOptions` is therefore left exactly
+as it was. The one header that did become unused, `<shobjidl.h>`
+(`ITaskbarList3`, `THUMBBUTTON`), and the local `THBN_CLICKED` fallback
+definition were both removed; the build confirms nothing else needed them. The
+only compiler warning is the pre-existing unused `GetRdpMonitorRect`, present
+at `HEAD` too.
+
+Not live-tested — this mod injects into `mstsc.exe` and `explorer.exe` and
+cannot be executed here. See LOOP-007 / LOOP-008.

@@ -5,6 +5,37 @@ Backlog of agreed-but-not-yet-built features and scoped-but-open ideas. Unlike
 `OPEN_LOOPS.md` (verification/test work on code that already exists), this
 file tracks things nobody has started building yet.
 
+## Removed 2026-09-01 (client mod v0.9.0) — the thumbnail toolbar is gone
+
+The **taskbar thumbnail toolbar** — the mstsc.exe-side buttons under the
+taskbar hover preview, the third of the toolkit's three client presentation
+surfaces — was removed in full
+([D-33](DECISIONS.md#d-33-the-taskbar-thumbnail-toolbar-is-removed-its-rich-status-tooltip-moves-to-the-taskbar-embedded-panel)).
+Two surfaces remain: the **taskbar-embedded panel** (`explorer.exe`, the main
+one, always visible) and the optional **floating overlay button**
+(`mstsc.exe`, off by default).
+
+The panel already offered the same five actions with the same
+enable/disable/relabel rules, always visible rather than hover-only, and
+covering windowed sessions equally — so the toolbar was a second copy of one UI
+to keep in sync, on top of an Apartment-model COM pointer, a one-shot
+`ThumbBarAddButtons` API, and hand-rendered glyph icons. Nothing that any other
+surface uses was touched: every shared action function (minimize, restore,
+fullscreen toggle, the reconnect helpers, disconnect) is unchanged, and the
+connection-quality sink's teardown — which used to ride along with the thumb
+bar's teardown on both the frame-destroy and the mod-unload path — keeps firing
+on both under its own message.
+
+The toolbar's rich status tooltip (session duration, local idle time,
+connection quality with bandwidth and round-trip time, not-responding warning)
+was **not** dropped: it was rebuilt on the panel's own status text from the
+fields the status snapshot already carries. The panel's five buttons also
+gained plain-language tooltips. `showThumbbar` is gone; `showConnectionQuality`,
+`showSessionInfo` and `showFullscreenToggle` now apply to the panel.
+
+Compiles, links and validates clean; **not live-tested** — LOOP-008 is the
+checklist, and it now covers the migrated tooltip and the new button tooltips.
+
 ## Agreed, not yet built
 
 Nothing in this section at the moment — the five items agreed in the earlier
@@ -23,12 +54,16 @@ real session.
   ([D-14](DECISIONS.md#d-14-fullscreenwindowed-toggle-is-synthesized-ctrlaltbreak-not-an-internal-call)):
   a thumbnail-toolbar button that sends Remote Desktop's own Ctrl+Alt+Break to
   the foregrounded session window. No transition logic of its own; refuses to
-  send if the foreground cannot be acquired.
+  send if the foreground cannot be acquired. *(v0.9.0: the button now lives on
+  the taskbar-embedded panel — the toolbar is gone, D-33. The mechanism is
+  unchanged.)*
 - **Session duration / idle-time display** — built
   ([D-15](DECISIONS.md#d-15-session-duration--idle-display-lives-on-both-surfaces-idle-is-local-input-idle)):
   a new row on the (fullscreen-only) overlay plus the tooltip of a new
   thumbnail-toolbar status icon (windowed coverage, minute granularity). Idle
-  is the client machine's own input idle by design.
+  is the client machine's own input idle by design. *(v0.9.0: the tooltip half
+  moved to the taskbar-embedded panel's status text, rebuilt there from the
+  status snapshot — D-33. The overlay row is unchanged.)*
 - **Connection quality indicator** — built, the most provisional of the five
   ([D-16](DECISIONS.md#d-16-connection-quality-comes-from-a-second-imstscaxevents-sink-advised-via-a-cocreateinstance-hook--built-pending-live-verification)):
   a real, documented hook point was found (second `IMsTscAxEvents` sink
@@ -94,9 +129,10 @@ changed (two mods → one), not the runtime design.
     nothing else; the existing per-feature thumb-bar settings are not applied
     to it (D-23).
   - **Toggle mechanism** — per-mod enable in Windhawk, as already confirmed;
-    to retire the overlay + thumbnail toolbar turn the client mod's
-    `showButton` off **and keep `stuckDetection` on** — with `showButton` off
-    the status file is written from the watchdog tick (D-22).
+    to retire the overlay turn the client mod's `showButton` off **and keep
+    `stuckDetection` on** — with `showButton` off the status file is written
+    from the watchdog tick (D-22). *(As of v0.9.0 the thumbnail toolbar is no
+    longer one of the surfaces to retire — it was removed outright, D-33.)*
   - **CitadelRdpTaskbarRelay untouched** (D-24).
 
 ## Scoped, open design questions
@@ -109,10 +145,13 @@ changed (two mods → one), not the runtime design.
   the channel's only credential). If elevated sessions matter, the options
   are an ACL'd secret location plus `MSGFLT_ALLOW`, or a different IPC
   primitive with its own access control. Not started.
-- **Status writer when both `showButton` and `stuckDetection` are off** — the
-  widget then shows "no session" (D-22 residual). A dedicated 1 s writer in
-  the client mod would close it; not added, pending the operator's call on
-  the no-new-timer constraint.
+- **Status writer when both the floating overlay and `stuckDetection` are
+  off** — the panel then shows "no session" (D-22 residual). The two 1 s ticks
+  that drive the writer belong to the overlay's status timer and the watchdog
+  poll, and removing the thumbnail toolbar (D-33) did not change that: the
+  toolbar never drove the writer. A dedicated 1 s writer in the mstsc branch
+  would close it; not added, pending the operator's call on the no-new-timer
+  constraint.
 - **Host mod + embedded client widget on the same machine** — both inject at
   the same default taskbar position and would overlap (D-21); only a
   settings workaround exists today.
