@@ -2,7 +2,7 @@
 // @id              rdp-session-toolkit-taskbar-client
 // @name            RDP Session Toolkit — Taskbar Client
 // @description     A taskbar companion for Remote Desktop sessions: a panel in your own taskbar with buttons for minimize, restore, switching between fullscreen and windowed, reconnecting, and disconnecting, plus a status line whose tooltip shows session time, idle time, connection quality, and a warning if the session stops responding. Also removes the floating connection bar that Windows shows during fullscreen sessions.
-// @version         0.9.0
+// @version         0.9.1
 // @author          StarlightDaemon
 // @github          https://github.com/StarlightDaemon
 // @include         mstsc.exe
@@ -4003,7 +4003,7 @@ BOOL ModInit() {
     if (g_stuckDetection)
         StartWatchdogThread();
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.0 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.1 initialized "
            L"[mstsc.exe branch] — "
            L"hide=%d overlay=%d hotkey=%d fade=%d hostname=%d "
            L"sessionInfo=%d reconnect=%d(mode=%d) stuck=%d(threshold=%ds)",
@@ -4964,12 +4964,16 @@ void ApplyStateToWidget(Grid widget) {
         btn.Visibility(g_Settings.fullscreenToggleEnabled ? Visibility::Visible
                                                           : Visibility::Collapsed);
 
-    // Relabels itself from the session's real state (DECISIONS.md D-14/D-19).
+    // Relabels itself from the session's real state (DECISIONS.md D-14/D-19),
+    // tooltip included, so the tooltip never describes the wrong direction.
     if (auto btn = FindByName<Button>(widget, kFullscreenName)) {
         wchar_t glyph[2] = { fullscreen ? (wchar_t)0xE73F : (wchar_t)0xE740, 0 };
         btn.Content(box_value(hstring{ glyph }));
         AutomationProperties::SetName(btn,
             fullscreen ? L"Switch to windowed" : L"Switch to fullscreen");
+        SetElementTooltip(btn, fullscreen
+            ? L"Switches to windowed mode."
+            : L"Switches to fullscreen.");
     }
 
     widget.Visibility((active || g_Settings.showWhenNoSession)
@@ -4984,7 +4988,8 @@ void ApplyStateToWidget(Grid widget) {
 // the XAML UI thread (DECISIONS.md D-23) and the command is re-checked
 // against live state (OnSendCommand) before it goes out.
 Button MakeActionButton(std::wstring_view name, wchar_t glyphChar,
-                        PCWSTR accessibleName, BYTE cmd, int column) {
+                        PCWSTR accessibleName, PCWSTR tooltip, BYTE cmd,
+                        int column) {
     Button btn;
     btn.Name(name);
     wchar_t glyph[2] = { glyphChar, 0 };
@@ -4999,6 +5004,7 @@ Button MakeActionButton(std::wstring_view name, wchar_t glyphChar,
     btn.IsEnabled(false);  // enabled by ApplyStateToWidget when applicable
     btn.Opacity(0.35);
     AutomationProperties::SetName(btn, accessibleName);
+    SetElementTooltip(btn, tooltip);
     btn.Click(RoutedEventHandler(
         [cmd](IInspectable const&, RoutedEventArgs const&) {
             DWORD tid = g_statusThreadId.load();
@@ -5084,17 +5090,29 @@ Grid BuildWidget() {
 
     // Five always-visible action buttons — same glyphs, order, and
     // enable/relabel rules the thumbnail toolbar's slots had (DECISIONS.md
-    // D-19), sent over the local command channel unchanged (D-23).
+    // D-19), sent over the local command channel unchanged (D-23). Each
+    // carries a plain-language tooltip saying what the click actually does to
+    // the session, rather than restating the button's own name.
     layout.Children().Append(MakeActionButton(kMinimizeName, 0xE921,
-        L"Minimize the RDP session", LWCMD_MINIMIZE, 1));
+        L"Minimize the RDP session",
+        L"Minimizes the session to your taskbar. Stays connected.",
+        LWCMD_MINIMIZE, 1));
     layout.Children().Append(MakeActionButton(kRestoreName, 0xE923,
-        L"Restore the RDP session", LWCMD_RESTORE, 2));
+        L"Restore the RDP session",
+        L"Brings the minimized session back to your screen.",
+        LWCMD_RESTORE, 2));
     layout.Children().Append(MakeActionButton(kFullscreenName, 0xE740,
-        L"Switch to fullscreen", LWCMD_FULLSCREEN_TOGGLE, 3));
+        L"Switch to fullscreen",
+        L"Switches between fullscreen and windowed.",
+        LWCMD_FULLSCREEN_TOGGLE, 3));
     layout.Children().Append(MakeActionButton(kReconnectName, 0xE72C,
-        L"Reconnect", LWCMD_RECONNECT, 4));
+        L"Reconnect",
+        L"Disconnects and reconnects to the same session.",
+        LWCMD_RECONNECT, 4));
     layout.Children().Append(MakeActionButton(kDisconnectName, 0xE8BB,
-        L"Disconnect this RDP session", LWCMD_DISCONNECT, 5));
+        L"Disconnect this RDP session",
+        L"Disconnects this session. Programs keep running remotely.",
+        LWCMD_DISCONNECT, 5));
 
     root.Children().Append(layout);
     return root;
@@ -5324,7 +5342,7 @@ BOOL ModInit() {
         PollForTaskbarViewDll();
     }
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.0 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.1 initialized "
            L"[explorer.exe branch — taskbar-embedded panel] — "
            L"position=%d width=%d showWhenNoSession=%d reconnect=%d "
            L"fsToggle=%d sessionInfo=%d quality=%d",
@@ -5413,7 +5431,7 @@ BOOL Wh_ModInit() {
     case HostProcess::Explorer:
         return embedded::ModInit();
     default:
-        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.0 loaded in a process "
+        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.1 loaded in a process "
                L"that is neither mstsc.exe nor explorer.exe — inert no-op");
         return TRUE;
     }
