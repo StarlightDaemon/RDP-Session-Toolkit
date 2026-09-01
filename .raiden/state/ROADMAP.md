@@ -33,8 +33,11 @@ fields the status snapshot already carries. The panel's five buttons also
 gained plain-language tooltips. `showThumbbar` is gone; `showConnectionQuality`,
 `showSessionInfo` and `showFullscreenToggle` now apply to the panel.
 
-Compiles, links and validates clean; **not live-tested** — LOOP-008 is the
-checklist, and it now covers the migrated tooltip and the new button tooltips.
+Compiles, links and validates clean. **Partly live-tested since (2026-09-01):**
+the removal itself is confirmed on real hardware — no thumbnail-toolbar log
+lines appear post-removal — and the panel is confirmed showing the migrated
+status tooltip. The rest is still owed: the panel's status half, the other
+command rows, and the five new button tooltips. LOOP-008 remains the checklist.
 
 ## Agreed, not yet built
 
@@ -56,7 +59,9 @@ real session.
   the foregrounded session window. No transition logic of its own; refuses to
   send if the foreground cannot be acquired. *(v0.9.0: the button now lives on
   the taskbar-embedded panel — the toolbar is gone, D-33. The mechanism is
-  unchanged.)*
+  unchanged.)* *(2026-09-01: **live-confirmed** — the panel's toggle acquires
+  the foreground and delivers the chord, repeatedly, on both of D-31's success
+  paths. LOOP-007 (b) is closed.)*
 - **Session duration / idle-time display** — built
   ([D-15](DECISIONS.md#d-15-session-duration--idle-display-lives-on-both-surfaces-idle-is-local-input-idle)):
   a new row on the (fullscreen-only) overlay plus the tooltip of a new
@@ -65,13 +70,18 @@ real session.
   moved to the taskbar-embedded panel's status text, rebuilt there from the
   status snapshot — D-33. The overlay row is unchanged.)*
 - **Connection quality indicator** — built, the most provisional of the five
-  ([D-16](DECISIONS.md#d-16-connection-quality-comes-from-a-second-imstscaxevents-sink-advised-via-a-cocreateinstance-hook--built-pending-live-verification)):
+  ([D-16](DECISIONS.md#d-16-connection-quality-comes-from-a-second-imstscaxevents-sink-advised-via-a-cocreateinstance-hook--advise-live-confirmed-via-d-29-the-event-itself-has-never-arrived)):
   a real, documented hook point was found (second `IMsTscAxEvents` sink
   advised on the RDP control captured via a `CoCreateInstance` hook; DISPIDs
   resolved at runtime), so it was built rather than left unbuilt — but whether
   the event actually reaches a second sink inside mstsc.exe is unverified.
   The icon stays neutral and says so until a real report arrives; nothing is
-  faked.
+  faked. *(2026-09-01: the **advise half is live-confirmed** — D-29's
+  creation-path hook fires and the sink is subscribed with a real cookie, across
+  multiple sessions. The **event half is still unverified**: no
+  `OnNetworkStatusChanged` has ever arrived with data, so the indicator has
+  stayed neutral on every real session — exactly as designed. The report now
+  shows on the taskbar-embedded panel, not a thumb-bar icon — D-33.)*
 - **Quick-reconnect shortcut with remembered display settings** — built
   ([D-17](DECISIONS.md#d-17-one-shared-reconnect-helper-capture-a-relaunch-command-line-launch-from-the-frames-wm_destroy)):
   settings-backed preferred mode (fullscreen / windowed at a fixed or the
@@ -145,13 +155,17 @@ changed (two mods → one), not the runtime design.
   the channel's only credential). If elevated sessions matter, the options
   are an ACL'd secret location plus `MSGFLT_ALLOW`, or a different IPC
   primitive with its own access control. Not started.
-- **Status writer when both the floating overlay and `stuckDetection` are
-  off** — the panel then shows "no session" (D-22 residual). The two 1 s ticks
-  that drive the writer belong to the overlay's status timer and the watchdog
-  poll, and removing the thumbnail toolbar (D-33) did not change that: the
-  toolbar never drove the writer. A dedicated 1 s writer in the mstsc branch
-  would close it; not added, pending the operator's call on the no-new-timer
-  constraint.
+- ~~**Status writer when both the floating overlay and `stuckDetection` are
+  off**~~ — **closed 2026-09-01 (D-34); no longer an open design question.**
+  The panel used to show "no session" in that combination because the only two
+  1 s ticks driving the writer belonged to the overlay's status timer and the
+  watchdog poll (removing the thumbnail toolbar in D-33 did not change that —
+  the toolbar never drove the writer). The operator's call on the no-new-timer
+  constraint was made in favour of a third tick: the always-alive
+  `CitadelRdpTaskbarLocalWidget` window now carries an unconditional 1 s
+  `SetTimer` calling `WriteLocalWidgetStatus`, reading neither settings flag
+  (D-34, client mod v0.9.2). Built and compile-checked; **not live-tested** —
+  confirming it with both settings off is now a LOOP-008 item.
 - **Host mod + embedded client widget on the same machine** — both inject at
   the same default taskbar position and would overlap (D-21); only a
   settings workaround exists today.

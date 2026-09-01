@@ -15,6 +15,14 @@
   taskbar-embedded panel already covered the same five actions. That half of
   this loop is closed by deletion, not by verification, and nothing is owed on
   it. Everything the toolbar used to present is now LOOP-008's business.
+
+  **Checked against the 2026-09-01 live-test evidence — still fully open.** That
+  evidence covers the host mod, the fullscreen-toggle foreground path, the
+  connection-quality advise, and the thumbnail-toolbar removal. None of it
+  touches the **floating overlay button**, which is the whole of what this loop
+  still owes. Note that the overlay has been off by default since D-30
+  (`showOverlay`), so a live pass has to turn it on deliberately — it will not
+  be exercised incidentally by any other loop's testing.
 - **LOOP-002 — Relay sender validation — RESOLVED 2026-08-21 (validation);
   residual: instance targeting still open.** The `CitadelRdpTaskbarRelay`
   receiver now validates every WM_COPYDATA sender: it accepts only this mod's
@@ -55,6 +63,33 @@
   `TaskListButton::UpdateVisualStates` symbol resolving on the host's OS
   build. Also verify WTSRegisterSessionNotification succeeds inside
   explorer.exe (the 30 s timer is the fallback if it does not).
+
+  **Narrowed 2026-09-01 (live-test evidence) — most of it is confirmed, two
+  items are not.** Confirmed on real hardware across multiple separate test
+  sessions, not just once: the widget's **status display** (which also proves
+  the XAML injection, the walk to `Grid#RootGrid`, and therefore that the
+  `TaskListButton::UpdateVisualStates` symbol resolves on this host's OS build —
+  none of that can produce a visible widget if it fails); the **Disconnect**
+  button's `WTSDisconnectSession`; and the **minimize-send path** (LOOP-006
+  proved the whole cross-machine pipe once; this is repeated confirmation of the
+  host end of it). Also confirmed, though this loop never itemised it: the
+  widget's **taskbar / system-tray overlap fix** — the margin-based
+  right-anchoring inherited from D-7/D-21 — works. Recording it here so it is
+  not left as folklore.
+
+  **Still open, because the evidence does not cover it:**
+  - **Console-vs-RDP gating of the Disconnect and Minimize buttons.** Every
+    observation so far is of the RDP case, where the buttons are *supposed* to
+    work. The property that actually matters is the negative one D-8 was written
+    for — that the mod can never disconnect the physical console session and
+    kick a locally-signed-in user to the lock screen — and that needs a
+    deliberate console-session pass. A working button over RDP is no evidence
+    about it.
+  - **Whether `WTSRegisterSessionNotification` actually succeeds inside
+    `explorer.exe`.** A status display that tracks connect/disconnect cycles
+    looks identical whether the event registration works or the 30 s safety-net
+    timer is quietly carrying it. This needs the registration's own log line, or
+    an observed refresh faster than 30 s — not the display alone.
 - **LOOP-006 — Full end-to-end minimize feature live test — RESOLVED
   2026-08-21 (operator-observed).** The whole cross-machine pipe — host mod
   Minimize button → `WTSVirtualChannelWrite('dvc::taskbar::relay', 0x01)` →
@@ -74,6 +109,12 @@
   at least once (the relay receiver ran live), so LOOP-001's "never loaded"
   framing is stale — the thumbnail toolbar and overlay, however, still have
   not been specifically checked and LOOP-001 stays open for those.
+
+  **Reconfirmed 2026-09-01.** The minimize path has since been observed working
+  on real hardware across multiple separate test sessions, not only the single
+  occasion this entry was written from. The "recorded on the operator's direct
+  report, no transcript" caveat above no longer carries the whole weight of the
+  claim.
 - **LOOP-007 — Live-test the v0.4.0 client-mod features (open, operator):**
   the five features added in the 2026-08-21 overnight session — fullscreen/
   windowed toggle (Ctrl+Alt+Break injection), session duration / idle display
@@ -142,6 +183,45 @@
     while a session is open and look for `RdpEvents: unadvised (mod unload)`;
     then close a session with the mod loaded and look for `RdpEvents:
     unadvised (frame WM_DESTROY)`. Both paths must still log.
+
+  **Update 2026-09-01 (live-test evidence) — (b) resolved, (a) narrowed to half
+  its size; the loop stays open.**
+  - **(b) fullscreen-toggle foreground — RESOLVED.** D-31's fix is confirmed
+    working live, repeatedly, and across *two* different underlying success
+    paths: the no-current-foreground direct-trust path D-31 was built for, and a
+    plain first-call `SetForegroundWindow` success that needed no fallback at
+    all. The foreground is acquired and the Ctrl+Alt+Break chord is therefore
+    delivered rather than suppressed — which is exactly and only what this item
+    asked. D-27's grant and D-31's direct path both stand as built; nothing is
+    owed here.
+  - **(a) connection quality — NARROWED; the advise is done, the event is not.**
+    Confirmed across multiple separate test sessions: D-29's factory-path hook
+    fires, the DISPIDs resolve for real from the registered type library, and
+    `Advise` succeeds returning a real cookie. The sink is genuinely subscribed,
+    so D-29 is live-confirmed and this item's original phrasing — "whether
+    `OnNetworkStatusChanged` actually fires to a second sink … if the first
+    [`RdpEvents: advised`] never appears the control was created by a path the
+    hook does not see" — is settled in the affirmative on the hook half.
+    **What remains open is strictly narrower and is a different question:** no
+    `OnNetworkStatusChanged` callback has ever been observed arriving with real
+    data. Every diagnostic checkpoint has read `quality=0`, including well past
+    the `[diag @ 10 s into session]` line. The open question is no longer "does
+    the hook fire" but "does mstscax broadcast this event to a *second*
+    subscriber at all" — D-16's original untested assumption, now isolated as
+    the only unproven link. Until a real `RdpEvents: network status` line
+    appears, the only honest thing any surface can show is "waiting for Remote
+    Desktop's first report" (D-16); confirming the panel actually says that is a
+    LOOP-008 item.
+  - **Untouched by this evidence and still fully open:** (c) the WM_DESTROY
+    reconnect relaunch; (d) `/w:` + `/h:` producing a windowed session against a
+    fullscreen `Default.rdp`; (e) the `enableReconnect` off/on gating of the
+    panel button and the alert's Force reconnect; (f) the deleted-`.rdp` refusal
+    at launch time; and both 2026-09-01 additions — `showFullscreenToggle`
+    collapsing the panel's fullscreen button, and both `UnadviseRdpEvents`
+    teardown paths (`RdpEvents: unadvised (mod unload)` and
+    `… (frame WM_DESTROY)`). The teardown paths in particular are *not* covered
+    by the confirmed thumbnail-toolbar removal: what was confirmed there is the
+    absence of thumb-bar log lines, not the presence of the sink's own.
 - **LOOP-008 — Live-test the taskbar-embedded client widget (open, operator):**
   `client-embedded/rdp-session-toolkit-taskbar-client-embedded.wh.cpp` v0.1.0
   and the client mod's v0.5.0 additions (status snapshot,
@@ -226,6 +306,50 @@
   Also worth one look: `showFullscreenToggle` off should remove the fullscreen
   button from the row entirely (`Visibility::Collapsed`), the same way
   `enableReconnect` off removes Reconnect — not merely dim it.
+
+  **Update 2026-09-01 (live-test evidence) — narrowed, still open, and still the
+  loop that matters most.**
+
+  *Confirmed live:*
+  - **D-33's removal is clean on the mstsc side** — no thumbnail-toolbar log
+    lines appear post-removal.
+  - **The panel renders and shows the migrated status tooltip.** So the
+    explorer branch injects, the panel is alive, and it is reading and
+    reformatting a snapshot rather than throwing or blanking.
+  - **The command channel carries a command end-to-end.** Since D-33 the
+    fullscreen toggle is driven *exclusively* from the panel (and it was already
+    the panel path in D-27/D-31), so LOOP-007(b)'s repeated live confirmation
+    necessarily means an explorer-side click reached the mstsc branch: the
+    shared secret was present and validated in both processes,
+    `SendLocalWidgetCommand` was handled, and `ToggleFullscreen` ran. That
+    substantially retires step (b) — the secret demonstrably works, even though
+    nobody has read the "generated"/"present" log lines themselves — and the
+    fullscreen row of step (d). It is also the first practical evidence that
+    D-26's merged-mod plumbing works, for the command half.
+
+  *Still open — and it is most of the loop:*
+  - **The status half is not confirmed.** Nobody has watched
+    `LocalWidget: status snapshots → <path>` on the mstsc side against
+    `Status: session ACTIVE` on the panel, or cross-checked the panel's numbers
+    against the mstsc log. A tooltip that renders is not proof the record behind
+    it is fresh, correctly scaled, or the one the mstsc branch just wrote — so
+    D-26's "the sibling-path guessing is structurally eliminated" remains a
+    strong expectation, not a checked result. Step (a) stands.
+  - **The other four command rows** — minimize, restore, reconnect, disconnect —
+    are unexercised from the panel.
+  - **D-34's new unconditional 1 s writer has never been run.** Its whole point
+    is that the panel stays live with both `showOverlay` and `stuckDetection`
+    off, which is precisely the combination nobody has tried; this replaces the
+    D-22 residual noted above as the thing to confirm here.
+  - **Everything presentational from the 2026-09-01 widening**: the tooltip's
+    three lines and their two setting gates, the no-session wording, the quality
+    line saying "waiting for Remote Desktop's first report" (which per
+    LOOP-007(a) is the only thing it can honestly say today, and therefore the
+    exact string to look for), the five action tooltips, and the fullscreen
+    tooltip flipping direction with real session state.
+  - **The remaining mechanics**: the ~4 s staleness dimming after an unclean
+    mstsc kill, `showFullscreenToggle` collapsing the fullscreen button, and
+    clean disable/re-enable of the mod in both processes.
 
 ### LOOP-SWEEP-20260831-001 — RDP Session Toolkit doctor WARN — state_unrecognized
 

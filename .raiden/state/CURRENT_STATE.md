@@ -13,29 +13,48 @@ Repository bootstrapped 2026-08-20; first components landed the same day.
 
 - `taskbar-integration/` — reorganized into `client/` and `host/` subfolders
   (pure move, pre-commit). **Client-side mod built** as
-  `client/rdp-session-toolkit-taskbar-client.wh.cpp`, now **v0.7.0** and
+  `client/rdp-session-toolkit-taskbar-client.wh.cpp`, now **v0.9.2** and
   targeting both `mstsc.exe` and `explorer.exe` (D-26; the embedded panel bullet
-  below). v0.7.0 (2026-08-22 overnight session): the panel's fullscreen toggle
+  below). The client-side pair now presents through **two independent
+  surfaces**: the **taskbar-embedded panel** (`explorer.exe`, D-21/D-26) is the
+  primary, always-visible, full-featured surface; the **floating overlay
+  button** (`mstsc.exe`, fullscreen-only) is off by default (`showOverlay`,
+  D-30). The **taskbar thumbnail toolbar**, the former third surface, was
+  **removed outright in v0.9.0 (D-33)** — its rich status tooltip was rebuilt on
+  the panel's own status text, and the panel's five action buttons gained
+  plain-language tooltips (v0.9.1). v0.9.2 (D-34) gave the panel's own
+  message-only window an unconditional 1 s status-write tick, closing the D-22
+  gap where a session with both `showOverlay` and `stuckDetection` off left the
+  panel — now the toolkit's only full-featured surface — showing "no session."
+  v0.7.0 (2026-08-22 overnight session): the panel's fullscreen toggle
   hands mstsc the foreground right before the command (D-27); Reconnect and
   Force reconnect are one opt-in setting, off by default, and a relaunch
   re-checks its `.rdp` file on disk at launch time (D-28); the mod storage path
   is resolved once instead of every second; and the connection-quality sink
   now also hooks the control's real creation path — mstscax's own class factory,
   identified from the binary — with step-by-step diagnostics (D-29; fix built,
-  not yet live-confirmed). Originally v0.4.0: a fork of
+  and **live-confirmed 2026-09-01: the sink now advises for real. The event
+  itself, `OnNetworkStatusChanged`, has still never arrived with data** — that
+  is D-16's separate open assumption). Originally v0.4.0: a fork of
   Hide RDP Connection Bar v1.1.9 (commit `dc82b10d…`, see D-6) carrying the
-  taskbar thumbnail toolbar — now six slots: Status icon, Minimize, Restore,
-  Fullscreen/windowed toggle, Reconnect, Disconnect (D-19) — plus the
+  taskbar thumbnail toolbar — grown to six slots: Status icon, Minimize,
+  Restore, Fullscreen/windowed toggle, Reconnect, Disconnect (D-19) — **since
+  removed outright in v0.9.0 (D-33)**, its status tooltip migrated to the
+  taskbar-embedded panel; see the surfaces summary above. Also carries the
   `CitadelRdpTaskbarRelay` message-window relay receiver with real sender
   validation accepting only this mod or the registered relay plugin EXE
   (WM_COPYDATA, minimize command; see D-5/D-11). v0.4.0 (2026-08-21 overnight
   session) added the five roadmap features: Ctrl+Alt+Break fullscreen toggle
   (D-14), session clock / local idle on the overlay and in the status tooltip
   (D-15), a connection-quality indicator driven by a second `IMsTscAxEvents`
-  sink on the RDP control (D-16 — built, least verified), a shared
-  reconnect helper with settings-backed display mode (D-17), and an
-  `IsHungAppWindow` watchdog with a manual Force-reconnect alert (D-18). None
-  of the v0.4.0 features has been live-tested (LOOP-007). **Host-side mod built**
+  sink on the RDP control (D-16), a shared reconnect helper with
+  settings-backed display mode (D-17), and an `IsHungAppWindow` watchdog with a
+  manual Force-reconnect alert (D-18). Of the v0.4.0 features: the fullscreen
+  toggle's foreground path is **live-confirmed** (D-31, LOOP-007 (b) closed);
+  the quality sink's advise is **live-confirmed** but its event
+  (`OnNetworkStatusChanged`) has never arrived with data, narrowing rather than
+  closing LOOP-007 (a); the reconnect and watchdog paths are still untested
+  (LOOP-007 (c)–(f)). **Host-side mod built**
   as `host/rdp-session-toolkit-taskbar-host.wh.cpp` v0.2.0 (own version line):
   native taskbar-XAML-injected widget in `explorer.exe` on the session host
   showing WTSClientName + WTSConnectState with a console-gated
@@ -43,9 +62,19 @@ Repository bootstrapped 2026-08-20; first components landed the same day.
   one byte over the `dvc::taskbar::relay` DVC on a detached background thread
   (see D-12; replaces the former D-9 TODO). Both compile-checked with the
   Windhawk clang (`compile-check.ps1`). The full host→client minimize pipe has
-  been **observed working live by the operator** (LOOP-006 resolved
-  2026-08-21), so both mods have run under Windhawk at least once; their
-  remaining surfaces are still unchecked (LOOP-001/005/007).
+  been **observed working live by the operator**, and **reconfirmed
+  2026-09-01** across multiple further sessions (LOOP-006 resolved
+  2026-08-21). Beyond that pipe, live-test coverage as of 2026-09-01: the host
+  mod's status display, Disconnect button, and minimize-send path are
+  **confirmed**, with console-vs-RDP button gating and whether
+  `WTSRegisterSessionNotification` actually registers still open (LOOP-005
+  narrowed); the client mod's fullscreen-toggle foreground fix is **confirmed**
+  and the quality sink's advise is **confirmed** (its event is not — see
+  above), with the reconnect/watchdog paths and the floating overlay button
+  still untested (LOOP-001/007); the taskbar-embedded panel itself is
+  confirmed rendering with a working command channel, but its status half and
+  four of its five command rows remain unexercised (LOOP-008, "the loop that
+  matters most" — see below).
 - `dvc-plugin/` — throwaway activation **probe** (out-of-process COM
   LocalServer + server-side trigger, `dvc-plugin/probe/`) — its gating
   two-machine live test **PASSED** (`dvc-plugin/TESTING.md`, VERIFIED
@@ -70,31 +99,39 @@ Repository bootstrapped 2026-08-20; first components landed the same day.
   so the former sibling-directory guessing is gone. The standalone
   `taskbar-integration/client-embedded/` file and folder are **deleted**
   (never committed; nothing lost). Merged mod compile-checks clean and its
-  settings block validates; **not yet loaded under Windhawk in the merged form**
-  — LOOP-008 re-scoped, the "no active session shown" fix is a strong
-  expectation pending live confirmation. The status writer (D-22), command
-  channel (D-23), and `CitadelRdpTaskbarRelay` (D-24) are unchanged in behavior.
+  settings block validates. **Live-confirmed 2026-09-01** (LOOP-008,
+  narrowed): D-26's merged-mod plumbing works for the command half — the panel
+  renders, shows the migrated status tooltip, and its fullscreen row carries a
+  command end-to-end through the shared-secret channel. **Still open and it is
+  most of the loop:** the status half (nobody has cross-checked the panel's
+  numbers against the mstsc-side snapshot write), the other four command rows
+  (minimize, restore, reconnect, disconnect), D-34's new unconditional 1 s
+  writer, and the presentational details (tooltip lines, setting gates,
+  staleness dimming, button collapse). The status writer (D-22, since extended
+  by D-34), command channel (D-23), and `CitadelRdpTaskbarRelay` (D-24) are
+  unchanged in behavior.
 
 ## Active Work
 
-Three 2026-08-21 sessions' worth of work is drafted and uncommitted:
-client mod v0.4.0/v0.4.1 (five roadmap features, LOOP-007); the
-taskbar-embedded client widget v0.1.0→v0.2.0 + client mod v0.5.0 (LOOP-008);
-and now the **v0.6.0 consolidation** — the standalone embedded mod folded into
-the client mod as its `explorer.exe` branch, one mod id with two `@include`
-targets, shared contracts unified, status-file path guessing eliminated, the
-`client-embedded/` folder deleted (D-26). Merged mod compile-checks clean and
-its settings block validates. DECISIONS D-14–D-26, ROADMAP, OPEN_LOOPS, and the
-READMEs updated. On top of that, the **2026-08-22 overnight session (v0.7.0,
-D-27–D-29)** fixed the two failures the first live tests surfaced (fullscreen
-toggle foreground; the never-advised quality sink — cause found in the mstsc
-binary, fix built, pending confirmation), gated all reconnects behind an
-off-by-default setting with a launch-time `.rdp` existence check, and removed
-the per-second storage-path polling; compile-checked clean after each task.
-Next natural steps: operator review of the judgment calls in LOOP-007 (now
-listing the exact log lines that prove or disprove D-29 and D-27) and
-(re-scoped) LOOP-008, then the live passes, then commit.
+Everything through the client mod's v0.9.0 thumbnail-toolbar removal (D-33)
+and v0.9.1 action-button-tooltip pass is committed. This session lands two
+more things: the **v0.9.2 code fix** — an unconditional 1 s status-write tick
+on the client mod's `LocalWidget` message window (D-34), closing the D-22
+residual gap that D-33's removal made serious (the panel is now the toolkit's
+only full-featured client surface, so it can no longer be allowed to go
+silently blank) — and a **documentation reconciliation pass**: correcting the
+connection-quality claim (D-16/D-29 were written before the sink's advise was
+live-confirmed) across DECISIONS/ROADMAP/CURRENT_STATE, folding the
+2026-09-01 live-test evidence into every open loop's disposition in
+OPEN_LOOPS (some resolved, some narrowed, some still fully open — no longer a
+blanket "pending"), and adding `EXPANSION_RESEARCH.md`, a research-only
+assessment (no code changes) of where the toolkit goes next given the
+now-actual architecture. Next natural steps: the live passes OPEN_LOOPS still
+calls for, in the order it lays out — LOOP-008 (the taskbar-embedded panel)
+matters most, since D-33 left it the toolkit's sole full-featured surface and
+most of that loop is still unexercised.
 
 ## Notes
 
-- No GitHub remote configured; this repo is intentionally local-only for now.
+- GitHub remote: `git@github.com:StarlightDaemon/RDP-Session-Toolkit.git`
+  (origin). No longer local-only.

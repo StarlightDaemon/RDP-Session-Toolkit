@@ -275,7 +275,7 @@ text changes (≈ once a minute) by a diff in the frame-thread sync, with the
 1 s tick living on the existing helper-thread overlay window. The row is blank
 (space reserved) when the feature is off, matching the hostname-row convention.
 
-## D-16: Connection quality comes from a second IMsTscAxEvents sink, advised via a CoCreateInstance hook — built, pending live verification
+## D-16: Connection quality comes from a second IMsTscAxEvents sink, advised via a CoCreateInstance hook — advise live-confirmed (via D-29); the event itself has never arrived
 
 Investigation result: `mstsc.exe` hosts the public MsRdpClient ActiveX control
 (`mstscax.dll`) and creates it with `CoCreateInstance` — checked against the
@@ -308,12 +308,28 @@ says the control is not hooked and to reopen the session; nothing is ever
 hard-coded or inferred. `Unadvise` runs only on the sink's home (STA) thread —
 the frame subclass does it on the existing teardown message and on the frame's
 `WM_DESTROY` (mstsc's one UI thread owns both frame and control); anywhere else
-it refuses and leaks rather than make a cross-apartment call. **Unverified
-live:** whether mstscax actually fires `OnNetworkStatusChanged` to a second
-sink inside mstsc.exe (it fires it to its own sink — the connection bar's signal
-bars depend on it — and COM connection points broadcast to all subscribers, but
-that has not been watched on a real session). LOOP-007 names the exact log
-lines that confirm or refute it.
+it refuses and leaks rather than make a cross-apartment call.
+
+**Live status — corrected 2026-09-01.** This section previously said the whole
+mechanism was unverified live. That is no longer accurate and must not be quoted
+as if it were. The **advise is confirmed**, across multiple separate live test
+sessions: once D-29 hooked the control's *real* creation path (mstscax's own
+class factory, not `CoCreateInstance`), the DISPIDs resolve for real from the
+registered type library, `FindConnectionPoint(DIID_IMsTscAxEvents)` succeeds, and
+`Advise` returns a real cookie. The sink is genuinely subscribed to the real RDP
+control.
+
+What is **still unverified — and is now the only unverified step** — is the
+assumption this decision was built on: that mstscax actually *fires*
+`OnNetworkStatusChanged` to a **second** subscriber inside mstsc.exe. It fires to
+its own sink (the connection bar's signal bars depend on it) and COM connection
+points are documented to broadcast to every subscriber, but no such callback has
+ever been observed here in any test: every diagnostic checkpoint has read
+`quality=0`, including well past ten seconds into a session. The honesty rules
+above are therefore not decoration — "waiting for Remote Desktop's first report"
+is what this indicator has shown on every real session to date, which is the
+correct behaviour for a report that never arrived. LOOP-007 (a) names the log
+line (`RdpEvents: network status …`) that would settle it.
 
 ## D-17: One shared reconnect helper: capture a relaunch command line, launch from the frame's WM_DESTROY
 
@@ -747,11 +763,13 @@ Reconnect button as present; the task's instruction not to change that block was
 followed, so those two paragraphs are now slightly stale — flagged for the
 operator rather than edited.
 
-## D-29: Connection-quality sink — the CoCreateInstance hook watched the wrong door; mstsc creates the control through mstscax's own class factory (cause identified from the binary; fix built; diagnostics added; live confirmation pending)
+## D-29: Connection-quality sink — the CoCreateInstance hook watched the wrong door; mstsc creates the control through mstscax's own class factory (cause identified from the binary; fix built; diagnostics added; live-confirmed 2026-09-01 — the sink now advises)
 
-**Problem.** Across every live test no `RdpEvents` line ever appeared, so it was
-unknown whether D-16's `CoCreateInstance` hook fired at all, fired and failed to
-advise, or something else.
+**Problem (as of 2026-08-22, before this fix).** Across every live test to that
+point no `RdpEvents` line ever appeared, so it was unknown whether D-16's
+`CoCreateInstance` hook fired at all, fired and failed to advise, or something
+else. *This describes the pre-fix state only — see "Outcome" below; it is not a
+statement about the current code and must not be quoted as one.*
 
 **Investigation (this machine: mstsc.exe / mstscax.dll 10.0.26100.8875, Windows
 11 25H2 build 26200).** The hook *installation* is sound: `ole32!CoCreateInstance`
@@ -805,14 +823,32 @@ Container)` HRESULT, the `FindConnectionPoint(IMsTscAxEvents)` HRESULT, and the
 session]`) reports all counters, sink state, and mstscax presence at two fixed
 moments so the next live test produces evidence even if nothing else fires.
 
-**Honest status.** A specific cause was identified from binary inspection and a
-targeted fix was built on it; this is more than diagnostics-only. It is **not**
-live-confirmed: the proof is `RdpEvents: mstscax factory CreateInstance #1 …`
-followed by `… FindConnectionPoint(IMsTscAxEvents) hr=0x00000000 — this object
-IS the RDP control` and `advised IMsTscAxEvents sink` in the next live test
-(LOOP-007 a). If the `[diag @ 10 s]` line shows zero factory calls, the WARNING
-variant of the DllGetClassObject line, or a non-zero `FindConnectionPoint`
-HRESULT, the log now says exactly where the path stopped.
+**Honest status (as written 2026-08-22).** A specific cause was identified from
+binary inspection and a targeted fix was built on it; this is more than
+diagnostics-only. It is **not** live-confirmed: the proof is `RdpEvents: mstscax
+factory CreateInstance #1 …` followed by
+`… FindConnectionPoint(IMsTscAxEvents) hr=0x00000000 — this object IS the RDP
+control` and `advised IMsTscAxEvents sink` in the next live test (LOOP-007 a). If
+the `[diag @ 10 s]` line shows zero factory calls, the WARNING variant of the
+DllGetClassObject line, or a non-zero `FindConnectionPoint` HRESULT, the log now
+says exactly where the path stopped.
+
+**Outcome — live-confirmed 2026-09-01, and what it did not settle.** The fix
+works. Across multiple separate live test sessions the factory path fires, the
+DISPIDs resolve for real, `FindConnectionPoint` succeeds, and `Advise` returns a
+real cookie. This decision's own claim — that mstsc takes the control from
+mstscax's class factory and that hooking there reaches it — is proven, and the
+"no `RdpEvents` line ever appeared" framing above belongs strictly to the pre-fix
+code.
+
+What this did **not** settle is the step after it. **No `OnNetworkStatusChanged`
+callback has ever been observed arriving with real data** — every diagnostic
+checkpoint reads `quality=0`, including well past the `[diag @ 10 s into
+session]` line. That is a different question from this decision's: it belongs to
+D-16's original assumption that mstscax broadcasts this event to a *second*
+subscriber, and it is now the only unproven link in the chain. Nothing anywhere
+should collapse "the hook fires and the sink is advised" and "the event arrives"
+into one fact — the first is done, the second is not.
 
 ## D-30: Overlay and thumbnail toolbar are two independent visibility settings (overlay off by default, thumbbar on)
 
