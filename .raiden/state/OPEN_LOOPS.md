@@ -164,9 +164,14 @@
   (staleness, D-22); (f) `showButton` off + `stuckDetection` on still shows
   status (the watchdog tick is the writer then); (g) disable/re-enable each
   mod in Windhawk and confirm clean unload (no explorer or mstsc hang).
-  *Residual from D-22:* with both `showButton` and `stuckDetection` off the
-  widget shows "no session" by design; decide whether a dedicated writer is
-  wanted after all. *LOOP-004 note:* the new channel's sender uses
+  *Residual from D-22 — RESOLVED 2026-09-01 (client mod v0.9.2, D-34).* The
+  `LocalWidget` message-only window (always alive regardless of settings) now
+  carries its own unconditional 1 s `SetTimer` calling
+  `WriteLocalWidgetStatus()`, so a session with both `showButton` and
+  `stuckDetection` off no longer goes silent — see D-34 for why this became
+  necessary once D-33 removed the thumbnail toolbar's fallback surface. Still
+  to confirm live: with both settings off, the panel shows an active session
+  (previously it would have shown "no session"). *LOOP-004 note:* the new channel's sender uses
   `SendMessageTimeoutW`; the relay self-test's untimed `SendMessageW` is
   unchanged (relay code is off-limits per D-24).
 

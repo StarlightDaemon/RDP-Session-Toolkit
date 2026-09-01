@@ -1076,3 +1076,54 @@ at `HEAD` too.
 
 Not live-tested — this mod injects into `mstsc.exe` and `explorer.exe` and
 cannot be executed here. See LOOP-007 / LOOP-008.
+
+## D-34: LocalWidget thread gains an unconditional 1 s status tick, closing the D-22 gap that D-33 made serious
+
+**Date:** 2026-09-01. **Client mod v0.9.1 → v0.9.2.**
+
+D-22 (client mod v0.5.0) accepted, in writing, that with both `showOverlay`
+and `stuckDetection` off nothing drives `WriteLocalWidgetStatus` and the
+taskbar-embedded panel is left showing "no session" — a residual gap kept
+deliberately, in service of a no-new-timer instruction, because the two
+*existing* 1 s ticks (the overlay's `STATUS_TIMER_ID` and the watchdog's
+`WATCHDOG_TIMER_ID`) were judged to cover the common cases well enough.
+
+That trade stopped being acceptable once D-33 removed the mstsc-side taskbar
+thumbnail toolbar. Before D-33 the thumbnail toolbar was a second
+full-featured client surface — a session with both settings off still had
+*some* live client UI on the taskbar hover preview. After D-33 the
+taskbar-embedded panel is the **only** full-featured client surface (D-33's
+own words: "the panel is now the toolkit's only full-featured client
+surface"). A panel that silently goes blank because of an settings
+combination that has nothing to do with the panel itself is a materially
+bigger problem now than when D-22 first weighed the trade-off — there is no
+fallback surface left to catch the user.
+
+**Fix.** `LocalWidgetThread`'s message-only window (`CitadelRdpTaskbarLocalWidget`,
+D-13/D-23) already runs for the mod's entire lifetime, independent of every
+settings gate — it is started unconditionally in `Wh_ModInit` alongside
+`StartRelayThread()`, specifically so toolkit components can always reach it.
+That makes it the natural home for the missing driver: a third 1 s
+`SetTimer` (`LOCAL_WIDGET_STATUS_TIMER_ID`, alongside the window's existing
+`WM_COPYDATA` handling) that calls `WriteLocalWidgetStatus()` on every tick,
+unconditionally — it does not read `g_showOverlay` or `g_stuckDetection` at
+all. `RelayThread`'s message-only window was the other candidate (it is
+equally always-alive), but it is the DVC relay command receiver, a channel
+with no existing tie to widget status, whereas the LocalWidget receiver
+already exists to serve the panel — adding the tick there keeps "what feeds
+the panel's snapshot" in one place.
+
+The two existing drivers are untouched: the overlay's status timer and the
+watchdog's poll still call `WriteLocalWidgetStatus()` exactly as before.
+`WriteLocalWidgetStatus`'s own throttle (an atomic compare-exchange, ~900 ms
+minimum interval — see D-22) already makes any number of concurrent callers
+safe; going from two drivers to three needed no change there. The new timer
+is started with `SetTimer` right after the window is created in
+`LocalWidgetThread`, and torn down with `KillTimer` in the window's own
+`WM_DESTROY` handler — the same start/stop placement every other timer in
+this file uses (`FADE_TIMER_ID`/`ICONIC_TIMER_ID`/`STATUS_TIMER_ID` on the
+overlay window, `WATCHDOG_TIMER_ID` on the alert window).
+
+**Verification.** `compile-check.ps1` passes end to end: compile and the
+real link step (D-32) to a fresh DLL with the mod's own `@compilerOptions`.
+Not live-tested — see LOOP-008, whose D-22 residual note this closes.

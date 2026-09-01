@@ -2,7 +2,7 @@
 // @id              rdp-session-toolkit-taskbar-client
 // @name            RDP Session Toolkit — Taskbar Client
 // @description     A taskbar companion for Remote Desktop sessions: a panel in your own taskbar with buttons for minimize, restore, switching between fullscreen and windowed, reconnecting, and disconnecting, plus a status line whose tooltip shows session time, idle time, connection quality, and a warning if the session stops responding. Also removes the floating connection bar that Windows shows during fullscreen sessions.
-// @version         0.9.1
+// @version         0.9.2
 // @author          StarlightDaemon
 // @github          https://github.com/StarlightDaemon
 // @include         mstsc.exe
@@ -3098,8 +3098,27 @@ HANDLE             g_hLocalWidgetThread      = nullptr;
 std::atomic<DWORD> g_localWidgetThreadId     { 0 };
 HANDLE             g_hLocalWidgetThreadReady = nullptr;  // queue-exists signal
 
+// D-34: unconditional 1 s status tick. D-22 accepted a residual gap — with
+// both showOverlay and stuckDetection off, nothing drove WriteLocalWidgetStatus
+// and the panel just showed a stale/blank snapshot — because at the time the
+// thumbnail toolbar was still a second full-featured client surface. D-33
+// removed that toolbar, so the panel is now the *only* one, and a silent
+// blank state is no longer an acceptable trade for "no new timer". This
+// window is alive for the mod's entire lifetime regardless of settings (see
+// StartLocalWidgetThread's call site), so it is the natural unconditional
+// driver; the overlay's STATUS_TIMER_ID and the watchdog's WATCHDOG_TIMER_ID
+// keep calling WriteLocalWidgetStatus exactly as before — the throttle inside
+// it already makes three callers as safe as two.
+constexpr int  LOCAL_WIDGET_STATUS_TIMER_ID = 46;
+constexpr UINT LOCAL_WIDGET_STATUS_POLL_MS  = 1000;
+
 LRESULT CALLBACK LocalWidgetWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+
+    case WM_TIMER:
+        if (wParam == LOCAL_WIDGET_STATUS_TIMER_ID)
+            WriteLocalWidgetStatus();
+        return 0;
 
     case WM_COPYDATA: {
         DWORD senderPid = 0;
@@ -3158,6 +3177,7 @@ LRESULT CALLBACK LocalWidgetWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     }
 
     case WM_DESTROY:
+        KillTimer(hwnd, LOCAL_WIDGET_STATUS_TIMER_ID);
         g_hLocalWidgetWnd = nullptr;
         return 0;
     }
@@ -3190,6 +3210,12 @@ DWORD WINAPI LocalWidgetThread(LPVOID) {
     }
     Wh_Log(L"LocalWidget: message window ready HWND=%p class=%s",
         g_hLocalWidgetWnd, LOCAL_WIDGET_CLASS);
+
+    // Unconditional status tick (D-34): this window lives for the whole mod
+    // lifetime independent of every settings gate, so this is the one driver
+    // of WriteLocalWidgetStatus that never goes silent.
+    SetTimer(g_hLocalWidgetWnd, LOCAL_WIDGET_STATUS_TIMER_ID,
+        LOCAL_WIDGET_STATUS_POLL_MS, nullptr);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -4003,7 +4029,7 @@ BOOL ModInit() {
     if (g_stuckDetection)
         StartWatchdogThread();
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.1 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.2 initialized "
            L"[mstsc.exe branch] — "
            L"hide=%d overlay=%d hotkey=%d fade=%d hostname=%d "
            L"sessionInfo=%d reconnect=%d(mode=%d) stuck=%d(threshold=%ds)",
@@ -5342,7 +5368,7 @@ BOOL ModInit() {
         PollForTaskbarViewDll();
     }
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.1 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.2 initialized "
            L"[explorer.exe branch — taskbar-embedded panel] — "
            L"position=%d width=%d showWhenNoSession=%d reconnect=%d "
            L"fsToggle=%d sessionInfo=%d quality=%d",
@@ -5431,7 +5457,7 @@ BOOL Wh_ModInit() {
     case HostProcess::Explorer:
         return embedded::ModInit();
     default:
-        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.1 loaded in a process "
+        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.2 loaded in a process "
                L"that is neither mstsc.exe nor explorer.exe — inert no-op");
         return TRUE;
     }
