@@ -36,6 +36,7 @@ Release/
 build/
 out/
 dvc-plugin/probe/bin/
+dvc-plugin/relay/bin/
 
 # DVC probe runtime log (written next to the plugin EXE at runtime)
 *.log
