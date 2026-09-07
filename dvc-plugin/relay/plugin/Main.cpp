@@ -25,6 +25,7 @@
 
 #include "RdpRelayPlugin.h"
 #include "RegistryHelper.h"
+#include "../common/RelayIds.h"
 
 // {6FC96481-9467-496E-BA33-A202ED052F39}
 DEFINE_GUID(CLSID_RdpRelay,
@@ -136,7 +137,8 @@ static int RunServer()
         return 1;
     }
 
-    RelayLog("LocalServer running, class object registered (cookie=%lu) -- waiting for mstsc", cookie);
+    RelayLog("LocalServer v" RELAY_VERSION_STRING " running, class object "
+             "registered (cookie=%lu) -- waiting for mstsc", cookie);
 
     // Live until the shutdown event fires. mstsc holds a reference for the life
     // of the RDP session; the process is reaped when the session/COM releases it.

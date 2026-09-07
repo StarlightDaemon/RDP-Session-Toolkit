@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              rdp-session-toolkit-taskbar-client
 // @name            RDP Session Toolkit — Taskbar Client
-// @description     A taskbar companion for Remote Desktop sessions: a panel in your own taskbar with buttons for minimize, restore, switching between fullscreen and windowed, reconnecting, and disconnecting, plus a status line whose tooltip shows session time, idle time, connection quality, and a warning if the session stops responding. Also removes the floating connection bar that Windows shows during fullscreen sessions.
-// @version         0.9.2
+// @description     A taskbar companion for Remote Desktop sessions: a panel in your own taskbar with buttons for minimize, restore, switching between fullscreen and windowed, reconnecting, and disconnecting, plus a status line whose tooltip shows this PC's idle time, connection quality, and a warning if the session stops responding. Also removes the floating connection bar that Windows shows during fullscreen sessions.
+// @version         0.10.0
 // @author          StarlightDaemon
 // @github          https://github.com/StarlightDaemon
 // @include         mstsc.exe
@@ -67,9 +67,13 @@ being written — see that setting).
 > always visible instead of hover-only, so the toolbar was a second copy of
 > the same UI to keep in sync. Its rich status tooltip was not lost — it moved
 > to the panel's own status text (hover it). The *Show taskbar thumbnail
-> toolbar* setting is gone; *Show connection quality*, *Show session duration
-> and idle time*, and *Fullscreen / windowed toggle button* now apply to the
-> panel.
+> toolbar* setting is gone; *Show connection quality*, *Show idle time*, and
+> *Fullscreen / windowed toggle button* now apply to the panel.
+
+> **Changed in v0.10.0.** The session-duration clock is gone entirely — from
+> the overlay's status row, the panel's status line, its tooltip, and the
+> status snapshot. Idle time stays, on its own. *Show idle time* (formerly
+> *Show session duration and idle time*) now controls exactly that one thing.
 
 Ported from the standalone
 [Hide RDP Connection Bar](https://github.com/StarlightDaemon/Hide-RDP-Connection-Bar)
@@ -88,9 +92,8 @@ taskbar-embedded panel described further below.
 The floating overlay button (when enabled) is pinned to any corner of the
 screen:
 
-- Four stacked rows: hostname display on top, then session time and this
-  computer's idle time, then Minimize and Restore side by side, Disconnect
-  on the bottom
+- Four stacked rows: hostname display on top, then this computer's idle
+  time, then Minimize and Restore side by side, Disconnect on the bottom
 - Minimize sends the fullscreen session to the taskbar; Restore brings
   it back from the same button, which stays on screen while the session
   is minimized. Whichever of the two does not apply to the current state
@@ -120,8 +123,8 @@ taskbar-embedded panel, driven from this branch:
   (`/multimon`).
 
 This branch also measures and publishes the session status the panel displays:
-how long the session has been open, how long this computer's own keyboard and
-mouse have been idle (local input idle — not remote-session activity), the
+how long this computer's own keyboard and mouse have been idle (local input
+idle — not remote-session activity), the
 connection quality level Remote Desktop itself reports (4 levels) with its
 bandwidth and round-trip time, and whether the session window has stopped
 responding. Nothing is invented — until Remote Desktop makes its first quality
@@ -137,12 +140,14 @@ seconds to close cleanly, then ends it and reopens the connection in the
 preferred display mode. The mod never reconnects on its own — every
 reconnect, forced or clean, starts with your click.
 
-## Toolkit relay receiver (stub)
+## Toolkit relay receiver
 
 The mod also creates a hidden message-only window (class
 `CitadelRdpTaskbarRelay`) at load. The RDP Session Toolkit's DVC relay plugin
-sends it `WM_COPYDATA` commands. The first payload byte is the command; only
-Minimize (0x01) is implemented so far. Senders are validated: only this mod's
+sends it `WM_COPYDATA` commands. The first payload byte is the command;
+Minimize (0x01) and Fullscreen toggle (0x02) are implemented — both routed to
+the same shared action functions every local surface uses. Senders are
+validated: only this mod's
 own process (the local self-test) or the registered DVC relay plugin's exact
 EXE are accepted; anything else is logged and ignored. The "Debug: send test
 minimize via relay" setting exercises the receiver locally without any other
@@ -154,7 +159,7 @@ A second, separate message-only window (class `CitadelRdpTaskbarLocalWidget`)
 serves the taskbar-embedded panel — this same mod's `explorer.exe` branch,
 running in this machine's own Explorer. Once a second this mod also writes a
 small status snapshot —
-session active, duration, this PC's idle time, connection quality, stuck
+session active, this PC's idle time, connection quality, stuck
 state, minimized / fullscreen — to `local-widget-status.dat` in its Windhawk
 mod storage folder, which the widget reads and treats as stale after a few
 seconds without a fresh write. Widget commands (minimize, restore, fullscreen
@@ -170,15 +175,16 @@ When injected into the client machine's own `explorer.exe`, this mod puts a
 **wide, always-visible status panel** directly into the Windows 11 taskbar,
 embedded in the taskbar's own XAML tree. The panel shows:
 
-- the remote host name, and the session duration / connection quality Remote
-  Desktop reports (or an honest "quality n/a" / "not responding" line).
-  **Hover that text** for the full detail — how long the session has been
-  open, how long this computer's own keyboard and mouse have been idle, the
-  reported quality level with its bandwidth and round-trip time, and the
-  not-responding warning with its running count. (This is the tooltip that
-  used to hang off the thumbnail toolbar's status icon; it moved here in
-  v0.9.0 when that toolbar was removed. *Show session duration and idle time*
-  and *Show connection quality* control which lines it carries.)
+- the remote host name on one line and the session's state and protocol
+  ("Active · RDP", "Minimized · RDP", or an honest "not responding" line) on
+  the next — the same two-line format the toolkit's host widget shows.
+  **Hover that text** for the full detail — how long this computer's own
+  keyboard and mouse have been idle, the reported connection-quality level
+  with its bandwidth and round-trip time, and the not-responding warning with
+  its running count. (This is the tooltip that used to hang off the thumbnail
+  toolbar's status icon; it moved here in v0.9.0 when that toolbar was
+  removed. *Show idle time* and *Show connection quality* control which lines
+  it carries.)
 - five always-visible buttons — **Minimize**, **Restore**,
   **Switch to fullscreen / windowed**, **Reconnect**, and **Disconnect** —
   each directly clickable, each with its own tooltip explaining in plain
@@ -198,7 +204,7 @@ branches are the same mod id, the panel finds the snapshot file directly via
 
 Its own layout settings are the `embedded…` group (position, width, font size,
 offset, show-when-no-session); what it *shows* is additionally governed by the
-shared *Show session duration and idle time*, *Show connection quality*,
+shared *Show idle time*, *Show connection quality*,
 *Fullscreen / windowed toggle button*, and *Enable Reconnect and Force
 reconnect* settings above. One session at a time, like the rest of the
 toolkit.
@@ -282,8 +288,8 @@ configured default.
   - end: End
   - pause: Pause / Break
 - showSessionInfo: true
-  $name: Show session duration and idle time
-  $description: Shows how long the session window has been open and how long this computer's own keyboard and mouse have been idle. Appears as a row on the floating overlay button (fullscreen sessions only) and in the tooltip of the taskbar-embedded panel's status text (all sessions — hover it). Idle time is measured on this computer, not from remote-session activity.
+  $name: Show idle time
+  $description: Shows how long this computer's own keyboard and mouse have been idle. Appears as a row on the floating overlay button (fullscreen sessions only) and in the tooltip of the taskbar-embedded panel's status text (all sessions — hover it). Idle time is measured on this computer, not from remote-session activity.
 - showConnectionQuality: true
   $name: Show connection quality
   $description: Adds the connection quality Remote Desktop itself reports (4 levels, Poor to Excellent) to the tooltip of the taskbar-embedded panel's status text, along with the reported bandwidth and round-trip time. The tooltip says it is still waiting until the first report arrives, and says so plainly if the session was already open when the mod loaded.
@@ -361,6 +367,7 @@ configured default.
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
@@ -430,6 +437,14 @@ HostProcess DetectHostProcess() {
 constexpr auto   LOCAL_WIDGET_CLASS        = L"CitadelRdpTaskbarLocalWidget";
 constexpr PCWSTR LOCAL_WIDGET_REG_KEY      = L"Software\\RDPSessionToolkit";
 constexpr PCWSTR LOCAL_WIDGET_REG_VALUE    = L"LocalWidgetSecret";
+// REG_SZ value under the same key holding this mod's resolved
+// Wh_GetModStoragePath directory. Written at mstsc-branch ModInit; read by
+// the DVC relay plugin (dvc-plugin/relay), which cannot call
+// Wh_GetModStoragePath itself — it is not a Windhawk mod — and needs the
+// exact status-file location to answer the host's state queries. Publishing
+// the real resolved path keeps the directory-name guessing D-26 eliminated
+// from ever coming back.
+constexpr PCWSTR LOCAL_WIDGET_REG_STORAGE_VALUE = L"ClientModStoragePath";
 constexpr PCWSTR LOCAL_WIDGET_SECRET_MUTEX = L"Local\\RDPSessionToolkit.LocalWidgetSecret";
 constexpr DWORD  LOCAL_WIDGET_SECRET_BYTES = 32;
 constexpr DWORD  kLocalWidgetCmdMagic      = 0x434C5752;  // 'RWLC'
@@ -457,19 +472,22 @@ struct LocalWidgetCommandPayload {
 #pragma pack(pop)
 
 // Status snapshot the mstsc branch writes ~1/s and the explorer branch reads.
+// Version 2: sessionDurationMs removed outright (the session-duration display
+// was removed from every surface — a real removal, not an always-zero field).
 constexpr DWORD  kLocalWidgetStatusMagic    = 0x53545352;  // 'RSTS'
-constexpr DWORD  kLocalWidgetStatusVersion  = 1;
+constexpr DWORD  kLocalWidgetStatusVersion  = 2;
 constexpr PCWSTR kLocalWidgetStatusFileName = L"local-widget-status.dat";
 
-// Status record layout is a contract between the two branches; bump
-// kLocalWidgetStatusVersion on any change.
+// Status record layout is a contract between the two branches (and, read-only,
+// the DVC relay plugin — see dvc-plugin/relay/common/RelayIds.h, which keeps
+// its own mirrored copy per D-10); bump kLocalWidgetStatusVersion on any
+// change.
 #pragma pack(push, 8)
 struct LocalWidgetStatus {
     DWORD     magic;
     DWORD     version;
     DWORD     writerPid;
     BOOL      sessionActive;      // the mstsc branch has a live session frame
-    ULONGLONG sessionDurationMs;
     DWORD     localIdleMs;        // this PC's own input idle (D-15)
     int       quality;            // 1–4; 0 = nothing reported yet (D-16)
     LONG      bandwidth;
@@ -483,6 +501,14 @@ struct LocalWidgetStatus {
     wchar_t   hostname[64];
 };
 #pragma pack(pop)
+
+// Layout pin shared with the relay plugin's read-only mirror
+// (dvc-plugin/relay/common/RelayIds.h asserts the same number): a drifted
+// copy fails to build on whichever side changed instead of silently
+// misreading the file.
+static_assert(sizeof(LocalWidgetStatus) == 192,
+              "LocalWidgetStatus layout changed — bump kLocalWidgetStatusVersion "
+              "and update the relay plugin's RelayClientStatus mirror");
 
 // ── Mod storage directory (resolved once, cached) ─────────────────────────
 //
@@ -537,6 +563,29 @@ bool BuildModStorageFilePath(PCWSTR fileName, wchar_t* pathBuffer, size_t buffer
 // Path to the status file (see GetModStorageDir for why both branches agree).
 bool GetLocalWidgetStatusFilePath(wchar_t* pathBuffer, size_t bufferChars) {
     return BuildModStorageFilePath(kLocalWidgetStatusFileName, pathBuffer, bufferChars);
+}
+
+// Publishes the resolved mod storage directory as
+// HKCU\Software\RDPSessionToolkit\ClientModStoragePath (REG_SZ) so the DVC
+// relay plugin can locate the status file without guessing at a directory
+// name — the exact fragility D-26 already eliminated once for the explorer
+// branch. Called from the mstsc branch's ModInit; idempotent.
+void PublishModStoragePath() {
+    const ModStorageDir& dir = GetModStorageDir();
+    if (!dir.ok)
+        return;  // GetModStorageDir already logged the failure
+    HKEY hKey = nullptr;
+    LSTATUS r = RegCreateKeyExW(HKEY_CURRENT_USER, LOCAL_WIDGET_REG_KEY, 0,
+        nullptr, 0, KEY_SET_VALUE, nullptr, &hKey, nullptr);
+    if (r == ERROR_SUCCESS) {
+        r = RegSetValueExW(hKey, LOCAL_WIDGET_REG_STORAGE_VALUE, 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(dir.path),
+            (DWORD)((wcslen(dir.path) + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+    }
+    Wh_Log(L"ModStorage: publish HKCU\\%s\\%s %s (%lu): %s",
+        LOCAL_WIDGET_REG_KEY, LOCAL_WIDGET_REG_STORAGE_VALUE,
+        r == ERROR_SUCCESS ? L"ok" : L"FAILED", (unsigned long)r, dir.path);
 }
 
 // Wipes secret material in a way the optimizer cannot elide. Local instead
@@ -602,6 +651,36 @@ bool EnsureLocalWidgetSecret(PCWSTR source) {
     return ok;
 }
 
+// ── Theme detection (shared toolkit pattern) ──────────────────────────────
+//
+// The taskbar's own light/dark follows SystemUsesLightTheme (NOT
+// AppsUseLightTheme, which governs app surfaces). The toolkit's panels
+// deliberately render the OPPOSITE tone — a light taskbar gets a dark panel,
+// a dark taskbar a light one — so the widget keeps strong contrast against
+// its surroundings instead of trying to blend in. This detection block and
+// the per-widget palette that inverts it are the toolkit's one shared
+// theme pattern: the host mod carries a verbatim copy (same convention as
+// SetElementTooltip), and the palettes must stay identical across the two
+// files. Live reaction: each widget's hidden top-level window watches
+// WM_SETTINGCHANGE("ImmersiveColorSet") and reapplies the palette.
+std::atomic<bool> g_SystemLightTheme{ false };
+
+bool IsSystemLightTheme() {
+    DWORD v = 0, cb = sizeof(v);
+    if (RegGetValueW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            L"SystemUsesLightTheme", RRF_RT_REG_DWORD, nullptr, &v, &cb)
+            != ERROR_SUCCESS)
+        return false;  // value absent ⇒ Windows defaults to dark
+    return v != 0;
+}
+
+// Re-reads the theme; true when it changed (the new value is already stored).
+bool RefreshSystemTheme() {
+    bool light = IsSystemLightTheme();
+    return g_SystemLightTheme.exchange(light) != light;
+}
+
 // Human-readable label for a reported connection-quality level (D-16).
 PCWSTR QualityLabel(int q) {
     switch (q) {
@@ -625,8 +704,8 @@ void FormatCoarse(ULONGLONG ms, wchar_t* out, size_t cch) {
     else        wcscpy_s(out, cch, L"<1m");
 }
 
-// "1:23:45" / "23:45" — the compact, second-granular clock form used by both
-// the overlay's status row and the embedded panel's duration line.
+// "1:23:45" / "23:45" — the compact, second-granular clock form used by the
+// overlay's idle row.
 void FormatClock(ULONGLONG ms, wchar_t* out, size_t cch) {
     ULONGLONG s = ms / 1000;
     unsigned h = (unsigned)(s / 3600), m = (unsigned)(s / 60 % 60),
@@ -836,13 +915,6 @@ RECT GetMonitorRect(HWND hRef) {
     if (hMon && GetMonitorInfoW(hMon, &mi))
         return mi.rcMonitor;
     return { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
-}
-
-RECT GetRdpMonitorRect() {
-    EnterCriticalSection(&g_cs);
-    HWND hRef = g_hRdpFrame ? g_hRdpFrame : g_hBBar;
-    LeaveCriticalSection(&g_cs);
-    return GetMonitorRect(hRef);
 }
 
 HMONITOR GetRdpMonitor() {
@@ -1361,22 +1433,19 @@ void ReconnectSessionClean(HWND hRef, PCWSTR source) {
     DisconnectSession(hRef, /*keepPendingReconnect=*/true);
 }
 
-// ── Session clock / local idle ────────────────────────────────────────────
+// ── Local idle ────────────────────────────────────────────────────────────
 //
-// Session start is stamped at the existing connection-detection hook point —
-// CreateWindowExW_Hook latching the TscShellContainerClass frame — so the
-// clock starts when mstsc opens the session window. Idle time is this
-// computer's own physical input idle time (GetLastInputInfo): keyboard/mouse
-// activity on the client machine, whether or not it is aimed into the RDP
-// session. That is the intended meaning — it is NOT a measure of activity
-// inside the remote session (DECISIONS.md D-15).
-
-std::atomic<ULONGLONG> g_sessionStartTick { 0 };  // GetTickCount64; 0 = none yet
-
-ULONGLONG GetSessionDurationMs() {
-    ULONGLONG start = g_sessionStartTick.load();
-    return start ? GetTickCount64() - start : 0;
-}
+// Idle time is this computer's own physical input idle time
+// (GetLastInputInfo): keyboard/mouse activity on the client machine, whether
+// or not it is aimed into the RDP session. That is the intended meaning — it
+// is NOT a measure of activity inside the remote session (DECISIONS.md D-15).
+//
+// The session-duration clock that used to live beside this (g_sessionStartTick
+// / GetSessionDurationMs, D-15) is removed in v0.10.0 — from the overlay row,
+// the panel line, the tooltip, and the status snapshot. The one non-display
+// consumer the session-start stamp had — the D-29 "10 s into session"
+// diagnostic — keeps its own narrowly-named deadline tick below
+// (g_rdpEventsDiagDueTick), stamped at the same frame-latch hook point.
 
 DWORD GetLocalIdleMs() {
     LASTINPUTINFO lii = { sizeof(lii), 0 };
@@ -1397,21 +1466,22 @@ std::atomic<bool> g_sessionHung { false };   // past the threshold, alert up
 std::atomic<int>  g_hungSeconds { 0 };       // consecutive hung polls
 
 // Overlay status row text; empty when the feature is off (the row stays
-// blank, same convention as the hostname row). A hang overrides the clock:
-// the overlay lives on the helper thread, so it keeps painting while the
-// frame thread is stuck.
+// blank, same convention as the hostname row). A hang overrides the idle
+// display: the overlay lives on the helper thread, so it keeps painting while
+// the frame thread is stuck. Since v0.10.0 the row carries idle time alone —
+// the session-duration clock is removed. The "is a session open" gate is the
+// live frame handle (GetRdpFrameForAction), not the retired start tick.
 void FormatOverlayStatus(wchar_t* out, size_t cch) {
     out[0] = L'\0';
     if (g_stuckDetection && g_sessionHung.load()) {
         swprintf_s(out, cch, L"⚠ not responding (%d s)", g_hungSeconds.load());
         return;
     }
-    if (!g_showSessionInfo || !g_sessionStartTick.load())
+    if (!g_showSessionInfo || !GetRdpFrameForAction())
         return;
-    wchar_t dur[32], idle[32];
-    FormatClock(GetSessionDurationMs(), dur, ARRAYSIZE(dur));
+    wchar_t idle[32];
     FormatClock(GetLocalIdleMs(), idle, ARRAYSIZE(idle));
-    swprintf_s(out, cch, L"%s · idle %s", dur, idle);
+    swprintf_s(out, cch, L"idle %s", idle);
 }
 
 // ── Connection quality state ──────────────────────────────────────────────
@@ -1439,6 +1509,12 @@ std::atomic<unsigned> g_coCreateCalls          { 0 };  // CoCreateInstance hook 
 std::atomic<unsigned> g_dllGetClassObjectCalls { 0 };  // mstscax!DllGetClassObject hook entries
 std::atomic<unsigned> g_factoryCreateCalls     { 0 };  // mstscax factory CreateInstance hook entries
 std::atomic<bool>     g_rdpEventsLateDiagLogged { false };
+// When the "10 s into session" diagnostic is due (GetTickCount64; 0 = no
+// session frame latched yet). Stamped at the frame-latch hook point. This is
+// the session-start stamp's ONE surviving consumer after the duration
+// removal, kept under a name scoped to its only purpose — it must never grow
+// back into a general session clock.
+std::atomic<ULONGLONG> g_rdpEventsDiagDueTick  { 0 };
 
 void LogRdpEventsDiag(PCWSTR when) {
     Wh_Log(L"RdpEvents: [diag @ %s] CoCreateInstance hook calls=%u, "
@@ -1686,7 +1762,10 @@ void WriteLocalWidgetStatus(bool force = false) {
 
     // D-29 diagnostics: one summary ~10 s into the session, from whichever
     // 1 s tick gets here first — by then the control has long been created.
-    if (active && GetSessionDurationMs() >= 10000 &&
+    // Driven by the diagnostic's own deadline tick since the session clock's
+    // removal (v0.10.0).
+    ULONGLONG diagDue = g_rdpEventsDiagDueTick.load();
+    if (active && diagDue && now >= diagDue &&
         !g_rdpEventsLateDiagLogged.exchange(true))
         LogRdpEventsDiag(L"10 s into session");
 
@@ -1695,7 +1774,6 @@ void WriteLocalWidgetStatus(bool force = false) {
     s.version           = kLocalWidgetStatusVersion;
     s.writerPid         = GetCurrentProcessId();
     s.sessionActive     = active ? TRUE : FALSE;
-    s.sessionDurationMs = active ? GetSessionDurationMs() : 0;
     s.localIdleMs       = GetLocalIdleMs();
     s.quality           = g_netQuality.load();
     s.bandwidth         = g_netBandwidth.load();
@@ -2781,10 +2859,21 @@ void StopWatchdogThread() {
 constexpr auto RELAY_CLASS = L"CitadelRdpTaskbarRelay";
 
 enum RelayCommand : BYTE {
-    RELAY_CMD_MINIMIZE = 0x01,
-    // Future commands (restore, disconnect, status updates) take new values
-    // here. 0x00 stays permanently unassigned so an all-zeros payload can
-    // never be a valid command.
+    RELAY_CMD_MINIMIZE          = 0x01,
+    // Host widget's fullscreen/windowed toggle button → the same shared
+    // ToggleFullscreen every other surface uses. Foreground note: this
+    // command arrives while the operator is working INSIDE the session, so
+    // the mstsc window is normally already the client machine's foreground
+    // window and ToggleFullscreen's D-14 safety gate passes trivially; if it
+    // somehow is not, the chord is not sent — same rule as every other path.
+    RELAY_CMD_FULLSCREEN_TOGGLE = 0x02,
+    // 0x03 is the host's status query. It is answered by the relay plugin
+    // itself and deliberately NEVER forwarded here (no side effect on the
+    // client); the value is reserved in this enum so no future command
+    // collides with it. See dvc-plugin/relay/common/RelayIds.h.
+    RELAY_CMD_QUERY_STATUS_RESERVED = 0x03,
+    // Future commands take new values here. 0x00 stays permanently
+    // unassigned so an all-zeros payload can never be a valid command.
 };
 
 // ── Relay sender validation ───────────────────────────────────────────────
@@ -2909,6 +2998,9 @@ LRESULT CALLBACK RelayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         switch (cmd) {
         case RELAY_CMD_MINIMIZE:
             return MinimizeRdpFrame(L"Relay minimize command") ? TRUE : FALSE;
+        case RELAY_CMD_FULLSCREEN_TOGGLE:
+            ToggleFullscreen(L"Relay fullscreen toggle command");
+            return TRUE;
         default:
             Wh_Log(L"Relay: unknown command 0x%02X — ignored", cmd);
             return FALSE;
@@ -3410,9 +3502,10 @@ public:
                     pDispParams ? pDispParams->cArgs : 0u);
             }
         } else if (dispIdMember == g_dispidConnected) {
-            // Tighter session-clock origin than frame creation, when available.
-            g_sessionStartTick.store(GetTickCount64());
-            Wh_Log(L"RdpEvents: OnConnected — session clock restarted");
+            // Logged as evidence the event sink receives real callbacks
+            // (LOOP-007 a). The session-clock restamp that used to live here
+            // went with the duration removal (v0.10.0) — the clock is gone.
+            Wh_Log(L"RdpEvents: OnConnected");
             NotifyStatusChanged();
         } else if (dispIdMember == g_dispidDisconnected) {
             long reason = (pDispParams && pDispParams->cArgs >= 1 && pDispParams->rgvarg)
@@ -3842,8 +3935,10 @@ HWND WINAPI CreateWindowExW_Hook(
             g_origFrameWndProc = origProc;
             LeaveCriticalSection(&g_cs);
 
-            // Session clock starts here — the connection-detection point.
-            g_sessionStartTick.store(GetTickCount64());
+            // Arm the D-29 "10 s into session" diagnostic from the
+            // connection-detection point (the session clock that used to be
+            // stamped here is gone — v0.10.0).
+            g_rdpEventsDiagDueTick.store(GetTickCount64() + 10000);
 
             Wh_Log(L"RDP frame detected HWND=%p — subclassed", hwnd);
             LogRdpEventsDiag(L"frame created");
@@ -3943,6 +4038,10 @@ BOOL ModInit() {
     // than on the first 1 s tick — every later path builder uses the cache.
     GetModStorageDir();
 
+    // Publish that directory for the DVC relay plugin (Task 5 / D-38): the
+    // relay reads the status file from it to answer the host's state queries.
+    PublishModStoragePath();
+
     // Registered before any hook is installed, so the frame subclass only
     // ever sees it fully initialized. This mod's private frame-thread request
     // to release the RDP control's event sink on its home thread.
@@ -4029,7 +4128,7 @@ BOOL ModInit() {
     if (g_stuckDetection)
         StartWatchdogThread();
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.2 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.10.0 initialized "
            L"[mstsc.exe branch] — "
            L"hide=%d overlay=%d hotkey=%d fade=%d hostname=%d "
            L"sessionInfo=%d reconnect=%d(mode=%d) stuck=%d(threshold=%ds)",
@@ -4218,8 +4317,9 @@ struct ModSettings {
     // v0.9.0 for exactly the same reason (D-33): the taskbar-embedded panel
     // is now the only surface that presents any of them, so the branch that
     // draws them is the branch that reads them.
-    //   showSessionInfo       -> the duration / idle lines of the status
-    //                            element's tooltip
+    //   showSessionInfo       -> the idle-time line of the status element's
+    //                            tooltip (idle alone since v0.10.0 — the
+    //                            session-duration display is removed)
     //   showConnectionQuality -> the quality / bandwidth / rtt line of it
     //   showFullscreenToggle  -> whether the fullscreen button is on the row
     // The mstsc branch keeps reading showSessionInfo for its own floating
@@ -4336,9 +4436,12 @@ WidgetState ReadWidgetState() {
 // in the status snapshot this branch reads once a second, so the tooltip is
 // rebuilt here from the snapshot instead, line for line:
 //
-//   Session 1h 23m · this PC idle 4m
+//   This PC idle 4m
 //   Quality 3/4 (Good) · bandwidth 4096 · rtt 32 ms
 //   NOT RESPONDING for 14 s — …
+//
+// (The "Session 1h 23m" half of the first line went with the v0.10.0
+// duration removal; idle time stays, on its own.)
 //
 // Same gating as the original (showSessionInfo / showConnectionQuality; the
 // hung line needs no stuckDetection check because the writer only ever sets
@@ -4370,10 +4473,9 @@ void FormatEmbeddedStatusTooltip(const WidgetState& st, wchar_t* out, size_t cch
     }
 
     if (g_Settings.showSessionInfo) {
-        wchar_t dur[32], idle[32];
-        FormatCoarse(st.s.sessionDurationMs, dur, ARRAYSIZE(dur));
+        wchar_t idle[32];
         FormatCoarse(st.s.localIdleMs, idle, ARRAYSIZE(idle));
-        swprintf_s(out, cch, L"Session %s \xB7 this PC idle %s", dur, idle);
+        swprintf_s(out, cch, L"This PC idle %s", idle);
     }
 
     if (g_Settings.showConnectionQuality) {
@@ -4504,6 +4606,7 @@ std::atomic<DWORD> g_statusThreadId     { 0 };
 HANDLE             g_hStatusThreadReady = nullptr;
 
 void RefreshWidgetUI();  // XAML side, below
+void RefreshThemeUI();   // XAML side, below (live theme change)
 
 // Poll: read the snapshot and push it into the widget's elements every tick —
 // the status text and button states are always on screen, and the duration
@@ -4531,6 +4634,16 @@ LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
             PollStatus();
             return 0;
         }
+        break;
+
+    case WM_SETTINGCHANGE:
+        // A system light/dark flip broadcasts WM_SETTINGCHANGE with
+        // "ImmersiveColorSet" to every top-level window — this hidden window
+        // is one, which is what lets the panel re-tone live instead of only
+        // at injection time.
+        if (lParam && wcscmp(reinterpret_cast<PCWSTR>(lParam),
+                             L"ImmersiveColorSet") == 0)
+            RefreshThemeUI();
         break;
 
     case WM_DESTROY:
@@ -4690,11 +4803,26 @@ constexpr std::wstring_view kRootGridName       = L"RootGrid";
 constexpr std::wstring_view kSystemTrayGridName = L"SystemTrayFrameGrid";
 constexpr std::wstring_view kSystemTrayFrameClass = L"SystemTray.SystemTrayFrame";
 
+// ── Per-monitor widget instances ──────────────────────────────────────────
+// Windows 11 builds a separate Taskbar.TaskbarFrame — with its own RootGrid
+// and its own SystemTray.SystemTrayFrame — per monitor, and the
+// UpdateVisualStates hook fires for buttons on every monitor's taskbar. The
+// former single g_WidgetRoot / g_SystemTray globals meant each monitor's
+// injection overwrote the previous binding, and BindSystemTray's cache
+// short-circuit made whichever monitor's tray bound FIRST the width used for
+// every margin computation — so a secondary monitor's panel was pushed left
+// by the primary monitor's much wider tray (the reported gap before the
+// clock), and only the last-injected widget was ever re-margined at all. One
+// instance is now tracked per taskbar frame: that frame's widget, root grid,
+// its own monitor's tray, and that tray's resize subscription.
+struct WidgetInstance {
+    weak_ref<Grid>             widget{ nullptr };
+    weak_ref<Grid>             rootGrid{ nullptr };
+    weak_ref<FrameworkElement> tray{ nullptr };
+    event_token                trayResizeToken{};
+};
 std::mutex g_WidgetMutex;
-weak_ref<Grid> g_WidgetRoot{ nullptr };
-weak_ref<Grid> g_RootGrid{ nullptr };
-weak_ref<FrameworkElement> g_SystemTray{ nullptr };
-event_token g_TrayResizeToken{};
+std::vector<WidgetInstance> g_Instances;  // guarded by g_WidgetMutex
 std::atomic<unsigned> g_MarginSeq{ 0 };
 ULONGLONG g_ModInitTick = 0;
 std::atomic<bool> g_ScanPending{ false };
@@ -4835,6 +4963,62 @@ SolidColorBrush MakeBrush(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
     return SolidColorBrush(ColorHelper::FromArgb(a, r, g, b));
 }
 
+// ── Toolkit panel visual spec (shared with the host mod) ──────────────────
+//
+// One coherent look across both of the toolkit's taskbar panels, applied as
+// identical code in both mod files (the SetElementTooltip convention). The
+// numbers are the spec:
+//   panel corner radius 8 · content margin 12 left / 8 right · button glyphs
+//   Segoe MDL2 on a transparent, borderless button with 7×3 padding, 6 px
+//   spacing, and a 4 px hover corner radius · name line at the configured
+//   font size, state line 2 pt smaller.
+// Colors come from the theme-INVERTED palette below (see the shared theme-
+// detection block): a light taskbar gets the dark palette and vice versa,
+// and a theme change while the panel is showing reapplies it live.
+struct PanelPalette {
+    Windows::UI::Color tint;       // acrylic tint
+    double             tintOpacity;
+    Windows::UI::Color primary;    // full-strength text and button glyphs
+    Windows::UI::Color secondary;  // dimmed second line
+    Windows::UI::Color alert;      // not-responding red
+    Windows::UI::Color warn;       // warning amber
+};
+
+PanelPalette GetPanelPalette() {
+    if (g_SystemLightTheme.load(std::memory_order_relaxed)) {
+        // Light system theme → DARK panel (inverted on purpose).
+        return {
+            ColorHelper::FromArgb(0xFF, 0x1A, 0x1A, 0x1A), 0.6,
+            ColorHelper::FromArgb(0xFF, 0xFF, 0xFF, 0xFF),
+            ColorHelper::FromArgb(0xB3, 0xFF, 0xFF, 0xFF),
+            ColorHelper::FromArgb(0xFF, 0xFF, 0x60, 0x60),
+            ColorHelper::FromArgb(0xFF, 0xFF, 0xC8, 0x3D),
+        };
+    }
+    // Dark system theme → LIGHT panel.
+    return {
+        ColorHelper::FromArgb(0xFF, 0xF2, 0xF2, 0xF2), 0.7,
+        ColorHelper::FromArgb(0xFF, 0x1B, 0x1B, 0x1B),
+        ColorHelper::FromArgb(0xB3, 0x1B, 0x1B, 0x1B),
+        ColorHelper::FromArgb(0xFF, 0xC4, 0x2B, 0x1C),
+        ColorHelper::FromArgb(0xFF, 0x9A, 0x5B, 0x00),
+    };
+}
+
+// The spec's button treatment, applied to every action button at creation.
+// Foreground is deliberately NOT set here — ApplyThemeToWidget owns it.
+void StyleActionButton(Button const& btn) {
+    btn.FontFamily(FontFamily(L"Segoe MDL2 Assets"));
+    btn.Background(MakeBrush(0x00, 0, 0, 0));
+    btn.BorderThickness(ThicknessHelper::FromUniformLength(0));
+    btn.Padding(ThicknessHelper::FromLengths(7, 3, 7, 3));
+    btn.Margin(ThicknessHelper::FromLengths(6, 0, 0, 0));
+    btn.CornerRadius(CornerRadiusHelper::FromUniformRadius(4.0));
+    btn.VerticalAlignment(VerticalAlignment::Center);
+    btn.IsEnabled(false);   // enabled by ApplyStateToWidget when applicable
+    btn.Opacity(0.35);
+}
+
 // Attaches (or updates) a wrapping, multi-line tooltip on an element. An
 // existing ToolTip's TextBlock is reused rather than replaced, so the
 // once-a-second status refresh does not build XAML objects on every tick and
@@ -4859,44 +5043,112 @@ void SetElementTooltip(DependencyObject const& target, PCWSTR text) {
 
 // ── Widget ────────────────────────────────────────────────────────────────
 
-void UpdateWidgetMargin(const wchar_t* reason);
+void UpdateWidgetMarginFor(Grid const& widget, const wchar_t* reason);
+void ApplyStateToWidget(Grid widget);
+std::vector<Grid> GetLiveWidgets();
 
-// Lazy tray bind (host mod pattern): the tray subtree may not exist at
-// cold-start injection; every caller runs on the UI thread after a layout
-// pass, so a tray that appears later is picked up on the next pass.
-FrameworkElement BindSystemTray(FrameworkElement anchor) {
+// Paints the current (inverted) palette onto one panel: acrylic background,
+// text foregrounds, button glyph color. Called at build time and again on a
+// live theme change; ApplyStateToWidget's own dynamic colors (the hung red)
+// read the same palette, so the two can never disagree. UI thread only.
+void ApplyThemeToWidget(Grid const& widget) {
+    if (!widget) return;
+    PanelPalette pal = GetPanelPalette();
+    try {
+        AcrylicBrush acrylic;
+        acrylic.BackgroundSource(AcrylicBackgroundSource::HostBackdrop);
+        acrylic.TintColor(pal.tint);
+        acrylic.TintOpacity(pal.tintOpacity);
+        widget.Background(acrylic);
+    } WH_CATCH(L"ApplyThemeToWidget/acrylic")
+    if (auto tb = FindByName<TextBlock>(widget, kHostNameName))
+        tb.Foreground(SolidColorBrush(pal.primary));
+    if (auto tb = FindByName<TextBlock>(widget, kStatusLineName))
+        tb.Foreground(SolidColorBrush(pal.secondary));
+    for (auto name : { kMinimizeName, kRestoreName, kFullscreenName,
+                       kReconnectName, kDisconnectName })
+        if (auto btn = FindByName<Button>(widget, name))
+            btn.Foreground(SolidColorBrush(pal.primary));
+}
+
+// Live theme change: re-read the system theme and, when it flipped, repaint
+// every panel with the newly inverted palette. Any thread.
+void RefreshThemeUI() {
+    if (!RefreshSystemTheme()) return;
+    bool light = g_SystemLightTheme.load();
+    Wh_Log(L"[theme] system theme now %s — applying the %s panel palette",
+        light ? L"light" : L"dark", light ? L"dark" : L"light");
+    for (auto& widget : GetLiveWidgets()) {
+        try {
+            auto weak = make_weak(widget);
+            widget.Dispatcher().RunAsync(
+                Windows::UI::Core::CoreDispatcherPriority::Normal,
+                [weak]() {
+                    if (auto w = weak.get()) {
+                        ApplyThemeToWidget(w);
+                        ApplyStateToWidget(w);
+                    }
+                });
+        } WH_CATCH(L"RefreshThemeUI/dispatch")
+    }
+}
+
+// Live widgets snapshot (dead weak refs skipped). Any thread.
+std::vector<Grid> GetLiveWidgets() {
+    std::vector<Grid> out;
+    std::lock_guard<std::mutex> g(g_WidgetMutex);
+    for (auto& inst : g_Instances)
+        if (auto w = inst.widget.get()) out.push_back(w);
+    return out;
+}
+
+// Lazy per-instance tray bind: the tray subtree may not exist at cold-start
+// injection; every caller runs on the UI thread after a layout pass, so a
+// tray that appears later is picked up on the next pass. The tray is found
+// from THIS widget's own visual root — i.e. its own monitor's taskbar — and
+// stored on this widget's instance entry, never in a shared global, so one
+// monitor's tray width can no longer leak into another monitor's margin.
+FrameworkElement BindSystemTrayFor(Grid const& widget) {
     {
         std::lock_guard<std::mutex> g(g_WidgetMutex);
-        if (auto tray = g_SystemTray.get()) return tray;
+        for (auto& inst : g_Instances) {
+            if (inst.widget.get() != widget) continue;
+            if (auto tray = inst.tray.get()) return tray;
+            break;
+        }
     }
-    FrameworkElement tray = FindSystemTray(anchor);
+    FrameworkElement tray = FindSystemTray(widget);
     if (!tray) return nullptr;
 
-    g_TrayResizeToken = {};
-    g_TrayResizeToken = tray.SizeChanged(
-        [](IInspectable const&, SizeChangedEventArgs const&) {
-            UpdateWidgetMargin(L"tray-sizechanged");
+    // The resize subscription recomputes only this widget's margin.
+    event_token token = tray.SizeChanged(
+        [weakWidget = make_weak(widget)](IInspectable const&,
+                                         SizeChangedEventArgs const&) {
+            if (auto w = weakWidget.get())
+                UpdateWidgetMarginFor(w, L"tray-sizechanged");
         });
     {
         std::lock_guard<std::mutex> g(g_WidgetMutex);
-        g_SystemTray = make_weak(tray);
+        for (auto& inst : g_Instances) {
+            if (inst.widget.get() != widget) continue;
+            inst.tray = make_weak(tray);
+            inst.trayResizeToken = token;
+            break;
+        }
     }
-    Wh_Log(L"[margin] tray bound: %s#%s actualWidth=%.1f",
-           winrt::get_class_name(tray).c_str(), tray.Name().c_str(), tray.ActualWidth());
+    Wh_Log(L"[margin] tray bound for widget %p: %s#%s actualWidth=%.1f",
+           winrt::get_abi(widget), winrt::get_class_name(tray).c_str(),
+           tray.Name().c_str(), tray.ActualWidth());
     return tray;
 }
 
-// Right: tracks the tray width so the panel sits beside the system tray.
-// Left/Center: a fixed margin from the respective edge. UI thread only.
-void UpdateWidgetMargin(const wchar_t* reason) {
-    Grid widget{ nullptr };
-    {
-        std::lock_guard<std::mutex> g(g_WidgetMutex);
-        widget = g_WidgetRoot.get();
-    }
+// Right: tracks THIS widget's own monitor's tray width so the panel sits
+// beside that monitor's system tray. Left/Center: a fixed margin from the
+// respective edge. UI thread only.
+void UpdateWidgetMarginFor(Grid const& widget, const wchar_t* reason) {
     if (!widget) return;
 
-    FrameworkElement tray = BindSystemTray(widget);
+    FrameworkElement tray = BindSystemTrayFor(widget);
 
     unsigned  seq = ++g_MarginSeq;
     ULONGLONG tMs = GetTickCount64() - g_ModInitTick;
@@ -4909,9 +5161,10 @@ void UpdateWidgetMargin(const wchar_t* reason) {
     } else {
         widget.Margin(ThicknessHelper::FromLengths(gap, 0, 0, 0));
     }
-    Wh_Log(L"[margin] #%u t+%llums reason=%s mode=%d tray=%s trayActualWidth=%.1f "
-           L"gap=%.0f -> margin=%.1f",
-           seq, tMs, reason, (int)g_Settings.widgetPosition,
+    Wh_Log(L"[margin] #%u t+%llums reason=%s widget=%p mode=%d tray=%s "
+           L"trayActualWidth=%.1f gap=%.0f -> margin=%.1f",
+           seq, tMs, reason, winrt::get_abi(widget),
+           (int)g_Settings.widgetPosition,
            tray ? L"found" : L"MISSING", trayWidth, gap, margin);
 }
 
@@ -4932,25 +5185,26 @@ void ApplyStateToWidget(Grid widget) {
                        : L"No active session");
 
     if (auto tb = FindByName<TextBlock>(widget, kStatusLineName)) {
+        // "<state> · <protocol>" — the same second-line format the host
+        // widget shows ("Active · RDP"). Duration is gone (v0.10.0), and
+        // connection quality lives entirely in the tooltip: the line never
+        // shows a quality value, so it can never show an invented one.
         wchar_t line[128];
         if (active) {
-            wchar_t dur[32];
-            FormatClock(st.s.sessionDurationMs, dur, ARRAYSIZE(dur));
             if (st.s.hung)
-                swprintf_s(line, ARRAYSIZE(line), L"\x26A0 not responding (%ds)",
-                    st.s.hungSeconds);
-            else if (!st.s.qualityAvailable || st.s.quality < 1 || st.s.quality > 4)
-                swprintf_s(line, ARRAYSIZE(line), L"%s \xB7 quality n/a", dur);
+                swprintf_s(line, ARRAYSIZE(line),
+                    L"\x26A0 not responding (%ds) \xB7 RDP", st.s.hungSeconds);
             else
-                swprintf_s(line, ARRAYSIZE(line), L"%s \xB7 %s", dur,
-                    QualityLabel(st.s.quality));
+                swprintf_s(line, ARRAYSIZE(line), L"%s \xB7 RDP",
+                    st.s.iconic ? L"Minimized" : L"Active");
         } else {
             wcscpy_s(line, ARRAYSIZE(line), (st.hasSnapshot && st.stale)
                 ? L"last seen a while ago" : L"\x2014");
         }
         tb.Text(line);
-        tb.Foreground(active && st.s.hung ? MakeBrush(0xFF, 0xFF, 0x60, 0x60)
-                                           : MakeBrush(0xB3, 0xFF, 0xFF, 0xFF));
+        PanelPalette pal = GetPanelPalette();
+        tb.Foreground(SolidColorBrush(
+            active && st.s.hung ? pal.alert : pal.secondary));
     }
 
     // The rich status tooltip the thumbnail toolbar's status icon used to
@@ -5020,15 +5274,7 @@ Button MakeActionButton(std::wstring_view name, wchar_t glyphChar,
     btn.Name(name);
     wchar_t glyph[2] = { glyphChar, 0 };
     btn.Content(box_value(hstring{ glyph }));
-    btn.FontFamily(FontFamily(L"Segoe MDL2 Assets"));
-    btn.Background(MakeBrush(0x00, 0, 0, 0));
-    btn.Foreground(MakeBrush(0xFF, 0xFF, 0xFF, 0xFF));
-    btn.BorderThickness(ThicknessHelper::FromUniformLength(0));
-    btn.Padding(ThicknessHelper::FromLengths(6, 2, 6, 2));
-    btn.Margin(ThicknessHelper::FromLengths(8, 0, 0, 0));
-    btn.VerticalAlignment(VerticalAlignment::Center);
-    btn.IsEnabled(false);  // enabled by ApplyStateToWidget when applicable
-    btn.Opacity(0.35);
+    StyleActionButton(btn);  // shared visual spec; theme sets the foreground
     AutomationProperties::SetName(btn, accessibleName);
     SetElementTooltip(btn, tooltip);
     btn.Click(RoutedEventHandler(
@@ -5057,19 +5303,14 @@ Grid BuildWidget() {
     Grid::SetRowSpan(root, 9999);
     // Margin is set dynamically via UpdateWidgetMargin() based on the position mode.
 
-    // System-integrated Acrylic background, matching the host mod's panel.
-    try {
-        AcrylicBrush acrylic;
-        acrylic.BackgroundSource(AcrylicBackgroundSource::HostBackdrop);
-        acrylic.TintColor(ColorHelper::FromArgb(0xFF, 0x1A, 0x1A, 0x1A));
-        acrylic.TintOpacity(0.6);
-        root.Background(acrylic);
-    } WH_CATCH(L"BuildWidget/acrylic")
+    // Background and all foregrounds come from the theme-inverted palette —
+    // applied once at the end of this function (ApplyThemeToWidget) and again
+    // on every live theme change (RefreshThemeUI).
 
     Grid layout;
     layout.HorizontalAlignment(HorizontalAlignment::Stretch);
     layout.VerticalAlignment(VerticalAlignment::Center);
-    layout.Margin(ThicknessHelper::FromLengths(10.0, 0.0, 8.0, 0.0));
+    layout.Margin(ThicknessHelper::FromLengths(12.0, 0.0, 8.0, 0.0));
 
     auto cols = layout.ColumnDefinitions();
     {
@@ -5091,7 +5332,6 @@ Grid BuildWidget() {
 
     TextBlock hostName;
     hostName.Name(kHostNameName);
-    hostName.Foreground(MakeBrush(0xFF, 0xFF, 0xFF, 0xFF));
     hostName.FontSize((double)g_Settings.fontSize);
     hostName.TextTrimming(TextTrimming::CharacterEllipsis);
     hostName.TextWrapping(TextWrapping::NoWrap);
@@ -5100,7 +5340,6 @@ Grid BuildWidget() {
 
     TextBlock statusLine;
     statusLine.Name(kStatusLineName);
-    statusLine.Foreground(MakeBrush(0xB3, 0xFF, 0xFF, 0xFF));
     statusLine.FontSize(std::max(8.0, (double)g_Settings.fontSize - 2.0));
     statusLine.TextTrimming(TextTrimming::CharacterEllipsis);
     statusLine.TextWrapping(TextWrapping::NoWrap);
@@ -5141,25 +5380,24 @@ Grid BuildWidget() {
         LWCMD_DISCONNECT, 5));
 
     root.Children().Append(layout);
+    // Now that every named child exists, paint the theme-inverted palette.
+    ApplyThemeToWidget(root);
     return root;
 }
 
-// Refresh from any thread: marshals ApplyStateToWidget onto the UI thread.
+// Refresh from any thread: marshals ApplyStateToWidget onto each live
+// widget's own UI thread (one panel per monitor's taskbar frame).
 void RefreshWidgetUI() {
-    Grid widget{ nullptr };
-    {
-        std::lock_guard<std::mutex> g(g_WidgetMutex);
-        widget = g_WidgetRoot.get();
+    for (auto& widget : GetLiveWidgets()) {
+        try {
+            auto weak = make_weak(widget);
+            widget.Dispatcher().RunAsync(
+                Windows::UI::Core::CoreDispatcherPriority::Normal,
+                [weak]() {
+                    if (auto w = weak.get()) ApplyStateToWidget(w);
+                });
+        } WH_CATCH(L"RefreshWidgetUI/dispatch")
     }
-    if (!widget) return;
-    try {
-        auto weak = make_weak(widget);
-        widget.Dispatcher().RunAsync(
-            Windows::UI::Core::CoreDispatcherPriority::Normal,
-            [weak]() {
-                if (auto w = weak.get()) ApplyStateToWidget(w);
-            });
-    } WH_CATCH(L"RefreshWidgetUI/dispatch")
 }
 
 // ── Injection ─────────────────────────────────────────────────────────────
@@ -5169,10 +5407,19 @@ void InjectWidgetInto(Grid rootGrid) {
 
     auto existing = FindByName<Grid>(rootGrid, kWidgetRootName);
     if (existing) {
+        // Already injected into THIS frame's RootGrid — make sure it is
+        // tracked (e.g. after the instance list was cleared) and refresh it.
         {
             std::lock_guard<std::mutex> g(g_WidgetMutex);
-            g_WidgetRoot = make_weak(existing);
-            g_RootGrid   = make_weak(rootGrid);
+            bool tracked = false;
+            for (auto& inst : g_Instances)
+                if (inst.widget.get() == existing) { tracked = true; break; }
+            if (!tracked) {
+                WidgetInstance inst;
+                inst.widget   = make_weak(existing);
+                inst.rootGrid = make_weak(rootGrid);
+                g_Instances.push_back(std::move(inst));
+            }
         }
         ApplyStateToWidget(existing);
         return;
@@ -5180,17 +5427,29 @@ void InjectWidgetInto(Grid rootGrid) {
 
     auto widget = BuildWidget();
     rootGrid.Children().Append(widget);
+    size_t liveCount = 0;
     {
         std::lock_guard<std::mutex> g(g_WidgetMutex);
-        g_WidgetRoot = make_weak(widget);
-        g_RootGrid   = make_weak(rootGrid);
+        // Prune entries whose widget died (its taskbar frame was torn down)
+        // while adding the new one — the list stays one entry per live frame.
+        g_Instances.erase(
+            std::remove_if(g_Instances.begin(), g_Instances.end(),
+                [](WidgetInstance& inst) { return inst.widget.get() == nullptr; }),
+            g_Instances.end());
+        WidgetInstance inst;
+        inst.widget   = make_weak(widget);
+        inst.rootGrid = make_weak(rootGrid);
+        g_Instances.push_back(std::move(inst));
+        liveCount = g_Instances.size();
     }
-    UpdateWidgetMargin(L"inject");
-    widget.Loaded([](IInspectable const&, RoutedEventArgs const&) {
-        UpdateWidgetMargin(L"loaded");
+    UpdateWidgetMarginFor(widget, L"inject");
+    widget.Loaded([](IInspectable const& sender, RoutedEventArgs const&) {
+        if (auto w = sender.try_as<Grid>())
+            UpdateWidgetMarginFor(w, L"loaded");
     });
     ApplyStateToWidget(widget);
-    Wh_Log(L"Widget injected into taskbar RootGrid");
+    Wh_Log(L"Widget injected into taskbar RootGrid (%u instance(s) tracked)",
+           (unsigned)liveCount);
 }
 
 void ScheduleScanAsync(FrameworkElement startNode) {
@@ -5225,42 +5484,41 @@ void ScheduleScanAsync(FrameworkElement startNode) {
 }
 
 void RemoveWidget() {
-    Grid widget{ nullptr };
-    Grid rootGrid{ nullptr };
+    // Take the whole instance list; each entry is removed on its own
+    // dispatcher (one widget per monitor's taskbar frame).
+    std::vector<WidgetInstance> instances;
     {
         std::lock_guard<std::mutex> g(g_WidgetMutex);
-        widget = g_WidgetRoot.get();
-        rootGrid = g_RootGrid.get();
-        g_WidgetRoot = nullptr;
-        g_RootGrid = nullptr;
+        instances = std::move(g_Instances);
+        g_Instances.clear();
     }
-    if (!widget || !rootGrid) return;
-
-    try {
-        auto weakGrid = make_weak(rootGrid);
-        rootGrid.Dispatcher().RunAsync(
-            Windows::UI::Core::CoreDispatcherPriority::Normal,
-            [weakGrid]() {
-                {
-                    std::lock_guard<std::mutex> lk(g_WidgetMutex);
-                    if (g_TrayResizeToken.value) {
-                        if (auto tray = g_SystemTray.get())
-                            try { tray.SizeChanged(g_TrayResizeToken); } catch (...) {}
-                        g_TrayResizeToken = {};
+    for (auto& inst : instances) {
+        Grid rootGrid = inst.rootGrid.get();
+        if (!rootGrid) continue;
+        try {
+            auto weakGrid = make_weak(rootGrid);
+            auto weakTray = inst.tray;
+            event_token token = inst.trayResizeToken;
+            rootGrid.Dispatcher().RunAsync(
+                Windows::UI::Core::CoreDispatcherPriority::Normal,
+                [weakGrid, weakTray, token]() {
+                    // All XAML cleanup on the dispatcher thread.
+                    if (token.value) {
+                        if (auto tray = weakTray.get())
+                            try { tray.SizeChanged(token); } catch (...) {}
                     }
-                    g_SystemTray = nullptr;
-                }
-                auto g = weakGrid.get();
-                if (!g) return;
-                auto children = g.Children();
-                for (int i = (int)children.Size() - 1; i >= 0; --i) {
-                    auto el = children.GetAt(i).try_as<FrameworkElement>();
-                    if (el && std::wstring(el.Name()) == kWidgetRootName) {
-                        children.RemoveAt(i);
+                    auto g = weakGrid.get();
+                    if (!g) return;
+                    auto children = g.Children();
+                    for (int i = (int)children.Size() - 1; i >= 0; --i) {
+                        auto el = children.GetAt(i).try_as<FrameworkElement>();
+                        if (el && std::wstring(el.Name()) == kWidgetRootName) {
+                            children.RemoveAt(i);
+                        }
                     }
-                }
-            });
-    } catch (...) {}
+                });
+        } catch (...) {}
+    }
 }
 
 // ── Hooks (from the host mod) ─────────────────────────────────────────────
@@ -5345,6 +5603,10 @@ BOOL ModInit() {
     g_ModInitTick = GetTickCount64();
     LoadSettings();
 
+    // Seed the theme state before anything is built; live flips arrive via
+    // WM_SETTINGCHANGE on the status thread's hidden window.
+    g_SystemLightTheme.store(IsSystemLightTheme());
+
     // Resolve (and log) the mod storage directory exactly once, here; the 1 s
     // status poll then reads the snapshot from the cached path.
     GetModStorageDir();
@@ -5368,7 +5630,7 @@ BOOL ModInit() {
         PollForTaskbarViewDll();
     }
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.2 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.10.0 initialized "
            L"[explorer.exe branch — taskbar-embedded panel] — "
            L"position=%d width=%d showWhenNoSession=%d reconnect=%d "
            L"fsToggle=%d sessionInfo=%d quality=%d",
@@ -5403,35 +5665,31 @@ void ModUninit() {
 void ModSettingsChanged() {
     LoadSettings();
 
-    Grid widget{ nullptr };
-    {
-        std::lock_guard<std::mutex> g(g_WidgetMutex);
-        widget = g_WidgetRoot.get();
+    for (auto& widget : GetLiveWidgets()) {
+        try {
+            auto weak = make_weak(widget);
+            int w = g_Settings.panelWidth;
+            double fs = (double)g_Settings.fontSize;
+            HorizontalAlignment ha =
+                g_Settings.widgetPosition == WidgetPosition::Left   ? HorizontalAlignment::Left   :
+                g_Settings.widgetPosition == WidgetPosition::Center ? HorizontalAlignment::Center :
+                                                                      HorizontalAlignment::Right;
+            widget.Dispatcher().RunAsync(
+                Windows::UI::Core::CoreDispatcherPriority::Normal,
+                [weak, w, fs, ha]() {
+                    auto g = weak.get();
+                    if (!g) return;
+                    g.Width((double)w);
+                    g.HorizontalAlignment(ha);
+                    if (auto tb = FindByName<TextBlock>(g, kHostNameName))
+                        tb.FontSize(fs);
+                    if (auto tb = FindByName<TextBlock>(g, kStatusLineName))
+                        tb.FontSize(std::max(8.0, fs - 2.0));
+                    ApplyStateToWidget(g);
+                    UpdateWidgetMarginFor(g, L"settings");
+                });
+        } catch (...) {}
     }
-    if (!widget) return;
-    try {
-        auto weak = make_weak(widget);
-        int w = g_Settings.panelWidth;
-        double fs = (double)g_Settings.fontSize;
-        HorizontalAlignment ha =
-            g_Settings.widgetPosition == WidgetPosition::Left   ? HorizontalAlignment::Left   :
-            g_Settings.widgetPosition == WidgetPosition::Center ? HorizontalAlignment::Center :
-                                                                  HorizontalAlignment::Right;
-        widget.Dispatcher().RunAsync(
-            Windows::UI::Core::CoreDispatcherPriority::Normal,
-            [weak, w, fs, ha]() {
-                auto g = weak.get();
-                if (!g) return;
-                g.Width((double)w);
-                g.HorizontalAlignment(ha);
-                if (auto tb = FindByName<TextBlock>(g, kHostNameName))
-                    tb.FontSize(fs);
-                if (auto tb = FindByName<TextBlock>(g, kStatusLineName))
-                    tb.FontSize(std::max(8.0, fs - 2.0));
-                ApplyStateToWidget(g);
-                UpdateWidgetMargin(L"settings");
-            });
-    } catch (...) {}
 
     Wh_Log(L"Settings reloaded [explorer.exe branch] — position=%d width=%d "
            L"showWhenNoSession=%d reconnect=%d fsToggle=%d sessionInfo=%d "
@@ -5457,7 +5715,7 @@ BOOL Wh_ModInit() {
     case HostProcess::Explorer:
         return embedded::ModInit();
     default:
-        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.9.2 loaded in a process "
+        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.10.0 loaded in a process "
                L"that is neither mstsc.exe nor explorer.exe — inert no-op");
         return TRUE;
     }

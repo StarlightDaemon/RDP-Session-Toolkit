@@ -1,18 +1,21 @@
 # dvc-plugin
 
-**Not built yet.** Placeholder for the standalone DVC relay companion executable.
+The production relay is built at [`relay/`](relay/). It is a client-side,
+out-of-process COM `LocalServer32` plugin that relays host-widget commands over
+an RDP Dynamic Virtual Channel to the client Windhawk mod, then returns the
+client's current session/fullscreen state on the same channel. The operator has
+live-tested the complete two-machine path.
 
-## What will eventually live here
+## Components
 
-A standalone executable that runs on the RDP client machine. It receives an RDP Dynamic
-Virtual Channel (DVC) signal sent by the remote-side Windhawk mod (see
-[`taskbar-integration`](../taskbar-integration/README.md)) and relays it to the
-client-side Windhawk mod via a Windows window message.
+- [`relay/`](relay/) — the production DVC relay companion executable.
+- [`probe/`](probe/) — the retired activation probe that established the
+  out-of-process DVC architecture; retained as historical reference.
 
 ## This is not a Windhawk mod
 
 This is a separate kind of software from the two mods in `taskbar-integration/`, with
-its own build and code-signing requirements. It is a standalone executable that
+its own build and code-signing requirements. The relay is a standalone executable that
 registers as a DVC plugin (a COM server), not code injected into an existing process.
 
 It has to run **out-of-process** from `mstsc.exe` rather than as an in-process Windhawk

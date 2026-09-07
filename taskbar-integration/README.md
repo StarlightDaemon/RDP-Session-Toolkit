@@ -9,8 +9,8 @@ subfolders — one per side of the RDP connection:
   taskbar-embedded panel, formerly a separate `client-embedded/` mod, folded in
   per D-26). As of **v0.9.0** the panel is the mod's primary surface: the
   mstsc-side taskbar **thumbnail toolbar** was removed as a duplicate of it
-  (D-33). Built, live-test pending.
-- [`host/`](host/) — the host-side (remote) mod, in the host's `explorer.exe` (built, live-test pending)
+  (D-33). Built and live-tested.
+- [`host/`](host/) — the host-side (remote) mod, in the host's `explorer.exe` (built and live-tested)
 
 ## Contents
 
@@ -22,8 +22,8 @@ subfolders — one per side of the RDP connection:
    extended with a toolkit relay receiver. It provides:
    - everything the original mod does (connection-bar hiding, overlay
      disconnect button, hostname display, hotkey, drag-to-reposition);
-   - the session status the taskbar-embedded panel displays — session clock,
-     this PC's input idle time, and the connection quality Remote Desktop
+   - the session status the taskbar-embedded panel displays — this PC's input
+     idle time and the connection quality Remote Desktop
      reports (a second `IMsTscAxEvents` sink; see D-15/D-16 in
      [`DECISIONS.md`](../.raiden/state/DECISIONS.md)) — published once a second
      into the status snapshot the panel reads. *(Through v0.8.0 this branch
@@ -38,9 +38,9 @@ subfolders — one per side of the RDP connection:
      watchdog** (`IsHungAppWindow`) that shows an on-screen alert with a manual
      Force reconnect — never automatic (D-18);
    - a hidden `HWND_MESSAGE` **relay receiver window** (class
-     `CitadelRdpTaskbarRelay`) created at mod load, which future toolkit
-     components — the [`dvc-plugin`](../dvc-plugin/README.md) relay — will
-     signal via `WM_COPYDATA`.
+     `CitadelRdpTaskbarRelay`) created at mod load, which the
+     [`dvc-plugin`](../dvc-plugin/README.md) relay signals via `WM_COPYDATA`
+     (0x01 minimize, 0x02 fullscreen toggle — see the protocol section below).
 2. **Host-side mod** — [`host/rdp-session-toolkit-taskbar-host.wh.cpp`](host/rdp-session-toolkit-taskbar-host.wh.cpp)
    (mod id `rdp-session-toolkit-taskbar-host`, own version line starting at
    0.1.0). Runs inside `explorer.exe` on the remote RDP session host. It
@@ -55,13 +55,15 @@ subfolders — one per side of the RDP connection:
    - a **Disconnect** button that calls `WTSDisconnectSession` against
      `WTS_CURRENT_SERVER_HANDLE` / `WTS_CURRENT_SESSION` — enabled only while
      the session is attached over RDP, dimmed and inert on a console session
-     so it can never kick the locally-signed-in user to the lock screen.
-
-   The host mod is deliberately standalone in this version: **no DVC channel
-   code, no cross-machine signaling, no minimize control** — a marked
-   `TODO(minimize-trigger)` in the source is the only placeholder for the
-   future DVC-relayed minimize (see D-9 in
-   [`DECISIONS.md`](../.raiden/state/DECISIONS.md)).
+     so it can never kick the locally-signed-in user to the lock screen;
+   - **Minimize** and **fullscreen/windowed toggle** buttons for the *client's*
+     Remote Desktop window, sent over the `dvc::taskbar::relay` DVC as an
+     open-write-**read**-close (the read is the relay's status reply — both
+     delivery confirmation and the client's session/fullscreen state, D-37/
+     D-38), plus a 3 s no-side-effect status poll that keeps the fullscreen
+     button labeled with its real direction;
+   - a **Restart Clipboard** button and a "clipboard helper not running" line
+     (D-35), both RDP-gated like everything else.
 3. **Taskbar-embedded panel (the client mod's `explorer.exe` branch)** —
    part of [`client/rdp-session-toolkit-taskbar-client.wh.cpp`](client/rdp-session-toolkit-taskbar-client.wh.cpp),
    not a separate mod.
@@ -72,14 +74,16 @@ subfolders — one per side of the RDP connection:
    as the host mod (D-21/D-25). This was previously a third, separate mod
    (`rdp-session-toolkit-taskbar-client-embedded`, last v0.2.0); it was folded
    into this mod at v0.6.0 (**D-26**), since a single Windhawk mod can target
-   more than one process. The panel shows the remote host name, the session
-   duration and connection quality (or an honest "quality n/a" /
-   "not responding" line), and five directly-clickable buttons —
+   more than one process. The panel shows the remote host name over a
+   state-and-protocol line ("Active · RDP", or an honest "not responding"
+   line — the same two-line format as the host widget), and five
+   directly-clickable buttons —
    Minimize / Restore / Switch-to-fullscreen-or-windowed / Reconnect /
    Disconnect — each with a plain-language tooltip, and each enabled, disabled
    or relabelled from the session's real state. Hovering the status text shows
-   the full detail: session duration, this PC's idle time, quality with
-   bandwidth and round-trip time, and the not-responding warning (D-33). It
+   the full detail: this PC's idle time, quality with bandwidth and
+   round-trip time, and the not-responding warning (D-33; the session-duration
+   clock was removed at v0.10.0, D-36). It
    acts only through the mstsc.exe branch:
    - **Status channel** (D-22): the mstsc.exe branch writes
      `local-widget-status.dat` to the mod's Windhawk storage directory about
@@ -94,26 +98,27 @@ subfolders — one per side of the RDP connection:
      `BCryptGenRandom` by whichever branch starts first). Without the exact
      secret a command is ignored. `CitadelRdpTaskbarRelay` is not involved (D-24).
 
-   To use only the taskbar panel, keep the mod enabled, leave *Show floating
-   overlay button* off, and keep *Detect stuck sessions* on (with the overlay
-   off, the watchdog tick is what publishes the status). Since v0.9.0 that is
-   also the default shape — there is no third surface to turn off.
+   To use only the taskbar panel, keep the mod enabled and leave *Show floating
+   overlay button* off. Since v0.9.2, the always-alive local command window
+   publishes status once a second regardless of the overlay or stuck-session
+   settings. Since v0.9.0 there is no third surface to turn off.
 
-## Relay receiver protocol (stub)
+## Relay receiver protocol
 
 - Window: message-only (`HWND_MESSAGE` parent), class `CitadelRdpTaskbarRelay`,
   created at mod load, destroyed at mod unload. Discover it with
   `FindWindowEx(HWND_MESSAGE, NULL, L"CitadelRdpTaskbarRelay", NULL)`.
 - Message: `WM_COPYDATA`. The first payload byte is the command; further bytes
   are reserved for future command-specific arguments and ignored today.
-- Commands: `0x01` = minimize the RDP session window (the same shared
-  `MinimizeRdpFrame` action every other surface uses). `0x00` is permanently
-  unassigned. More commands will be added without changing the window or class
+- Commands: `0x01` = minimize the RDP session window, `0x02` = fullscreen /
+  windowed toggle — each routed to the same shared action function every other
+  surface uses. `0x03` is reserved: it is the host's status query, answered by
+  the relay plugin itself and never forwarded here. `0x00` is permanently
+  unassigned. More commands are added without changing the window or class
   setup.
-- The receiver logs the sending process ID. **Sender validation is deliberately
-  deferred** until the DVC relay plugin exists with a known, stable identity —
-  see the marked TODO in the source and D-5 in
-  [`.raiden/state/DECISIONS.md`](../.raiden/state/DECISIONS.md).
+- Sender validation (D-11): only this mod's own process (the local self-test)
+  or the registered DVC relay plugin's exact `LocalServer32` EXE image path is
+  accepted; everything else is logged and ignored.
 
 ### Exercising the receiver locally
 

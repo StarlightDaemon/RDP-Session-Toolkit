@@ -5,6 +5,36 @@ Backlog of agreed-but-not-yet-built features and scoped-but-open ideas. Unlike
 `OPEN_LOOPS.md` (verification/test work on code that already exists), this
 file tracks things nobody has started building yet.
 
+## Built 2026-09-01, second session (client v0.10.0, host v0.4.0, relay v0.2.0) — live-verified 2026-09-06
+
+One large session; every item compiles/links clean and was subsequently
+live-verified by the operator over several days (LOOP-009 resolved):
+
+- **Session duration removed outright; idle time stands alone** (D-36).
+  `LocalWidgetStatus` wire version 1 → 2; *Show idle time* (the rescoped
+  `showSessionInfo`) now controls exactly the idle display.
+- **Host Minimize fixed** (D-37): the open-write-close send raced asynchronous
+  DVC delivery (the live-proven probe drained 500 ms before closing; that
+  drain was dropped in the D-12 adaptation). The send is now
+  open-write-**read**-close; the read is the delivery confirmation.
+- **Client → host state channel** (D-38): the relay plugin answers every
+  command with a `RelayStatusReply` (magic 'RSRP', v1) built from the client
+  mod's status snapshot, located via the registry-published storage path —
+  §2.2's missing piece, built on the existing channel. The host polls a
+  no-side-effect status query every 3 s and caches the client's fullscreen
+  state with a 10 s staleness window.
+- **Host fullscreen/windowed toggle button** (D-38): sends the new relay
+  command 0x02 to the client's shared `ToggleFullscreen`; relabels itself
+  from the cached client state or says the state is unknown.
+- **Per-monitor taskbar instances in both mods** (D-39): fixes the
+  secondary-monitor margin bug (shared globals let one monitor's tray width
+  drive every monitor's margin).
+- **Shared visual spec + theme-inverted coloring in both widgets** (D-40):
+  one panel look; light taskbar → dark panel and vice versa; live reaction to
+  theme flips via WM_SETTINGCHANGE.
+- Host Minimize and Disconnect gained plain-language tooltips (Task 4),
+  joining Restart Clipboard's.
+
 ## Removed 2026-09-01 (client mod v0.9.0) — the thumbnail toolbar is gone
 
 The **taskbar thumbnail toolbar** — the mstsc.exe-side buttons under the
@@ -39,6 +69,41 @@ lines appear post-removal — and the panel is confirmed showing the migrated
 status tooltip. The rest is still owed: the panel's status half, the other
 command rows, and the five new button tooltips. LOOP-008 remains the checklist.
 
+## Built 2026-09-01 (host mod v0.3.0), live-verified 2026-09-06
+
+- **Restart rdpclip.exe from the host widget, with the clipboard presence
+  line** — built
+  ([D-35](DECISIONS.md#d-35-restart-rdpclipexe-from-the-host-widget-plus-a-report-the-negative-only-clipboard-presence-line)).
+  This was `EXPANSION_RESEARCH.md`'s **#1 recommendation** (§4.1 for the action,
+  §4.2 for the line, §6 for the ranking and the sequencing); it moves from
+  *recommended* to *built* here, and it is built as that document specified
+  rather than redesigned.
+
+  A **Restart Clipboard** button on the host widget finds the `rdpclip.exe`
+  processes in *this* session (`ProcessIdToSessionId` of our own pid — not the
+  active console session), verifies each one's full image path really is
+  `<GetSystemWindowsDirectoryW>\System32\rdpclip.exe` before touching it,
+  terminates every verified match, waits on each handle for it to actually
+  exit plus a short settle for the window manager to release its clipboard
+  bindings, re-checks, and launches exactly one replacement. Zero matches is a
+  fresh start, not an error. RDP-gated and re-checked at click time like
+  Disconnect and Minimize; run on the D-12 detached one-shot thread with its
+  in-flight counter drained at unload. The tooltip states plainly that the
+  shared clipboard's contents are discarded.
+
+  A **"Clipboard helper not running"** line, from the same shared find-and-verify
+  function, rides the existing 30 s WTS safety-net timer — no new timer. It says
+  nothing at all when a helper *is* running: a wedged-but-present rdpclip cannot
+  be distinguished, so the widget never claims the clipboard is fine.
+
+  No new channel, no new IPC, no client-side change, no `@compilerOptions`
+  change. Compiles, links and validates clean. The operator subsequently
+  live-verified the action and presence line; LOOP-005 is resolved.
+
+  *Still recommended, not started:* #2 prevent host sleep during a session
+  (§3.4) and #3 host connection history log (§3.3). §6 says to live-test #1
+  before starting #2.
+
 ## Agreed, not yet built
 
 Nothing in this section at the moment — the five items agreed in the earlier
@@ -46,7 +111,7 @@ brainstorm session (2026-08-21 or earlier) were all built in the first
 2026-08-21 overnight session, and the taskbar-embedded client mode in the
 second; see the next two sections.
 
-## Built 2026-08-21 (client mod v0.4.0), pending live test
+## Built 2026-08-21 (client mod v0.4.0), live-verified 2026-09-06
 
 All five moved from "agreed, not built" to built-and-compiling in one session;
 none has been loaded under Windhawk yet — **LOOP-007** in `OPEN_LOOPS.md` is
@@ -164,8 +229,8 @@ changed (two mods → one), not the runtime design.
   constraint was made in favour of a third tick: the always-alive
   `CitadelRdpTaskbarLocalWidget` window now carries an unconditional 1 s
   `SetTimer` calling `WriteLocalWidgetStatus`, reading neither settings flag
-  (D-34, client mod v0.9.2). Built and compile-checked; **not live-tested** —
-  confirming it with both settings off is now a LOOP-008 item.
+  (D-34, client mod v0.9.2). Built, compile-checked, and subsequently
+  live-verified by the operator; LOOP-008 is resolved.
 - **Host mod + embedded client widget on the same machine** — both inject at
   the same default taskbar position and would overlap (D-21); only a
   settings workaround exists today.

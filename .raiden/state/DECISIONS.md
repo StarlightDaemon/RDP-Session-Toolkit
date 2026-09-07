@@ -188,7 +188,7 @@ explorer.exe, per the task's degradation requirement.
 ## D-13: Taskbar-embedded client mode gets its own local message window, not an extension of CitadelRdpTaskbarRelay (design only, not built)
 
 The 2026-08-21 scoping session for the taskbar-embedded client presentation
-mode (see `ROADMAP.md`) identified a cross-process authorization problem: that
+mode (see the root `ROADMAP.md`) identified a cross-process authorization problem: that
 future third mod would live in the client machine's own `explorer.exe`, and
 needs some way to signal the existing client mod (in `mstsc.exe`) — but
 `CitadelRdpTaskbarRelay`'s `IsAuthorizedRelaySender` only recognizes two
@@ -217,7 +217,7 @@ This is a design decision, not an implementation: the local channel, its
 validation mechanism, and the new mod itself are **not yet built**. What
 "appropriately scoped" validation looks like for the same-machine case
 (extra handshake/shared secret, a different IPC mechanism, command scoping,
-UIPI/elevation handling) remains open — see `ROADMAP.md`.
+UIPI/elevation handling) remains open — see the root `ROADMAP.md`.
 
 **Update 2026-08-21:** built. The mod is D-21, the status channel D-22, the
 local window and its shared-secret validation D-23; D-24 records that
@@ -1163,3 +1163,348 @@ overlay window, `WATCHDOG_TIMER_ID` on the alert window).
 **Verification.** `compile-check.ps1` passes end to end: compile and the
 real link step (D-32) to a fresh DLL with the mod's own `@compilerOptions`.
 Not live-tested — see LOOP-008, whose D-22 residual note this closes.
+
+## D-35: Restart rdpclip.exe from the host widget, plus a report-the-negative-only clipboard presence line
+
+**Date:** 2026-09-01. **Host mod v0.2.0 → v0.3.0.**
+
+**Design basis, and it is entirely borrowed:** the root `EXPANSION_RESEARCH.md` §4.1
+(the restart action) and §4.2 (the presence line) specified this feature; it is
+built as specified rather than redesigned. Every mechanism in it already exists
+in this toolkit — [D-8](#d-8-host-mod-session-facts-come-from-wts-apis-against-the-current-session)'s
+console-vs-RDP gate re-checked at click time,
+[D-11](#d-11-client-relay-receiver-now-validates-the-sender-closes-d-5s-todo)'s
+exact-image-path identity check, and
+[D-12](#d-12-host-mod-minimize-send--implementation-and-threading)'s detached
+one-shot thread with an in-flight counter drained in `Wh_ModUninit`. No new
+channel, no new IPC, no new thread model, no client-side change, and no change
+to `@compilerOptions` (wtsapi32 was already linked; everything else is
+kernel32).
+
+**Find.** `WTSEnumerateProcessesW` lists processes with names and session ids
+in one call. Candidates named `rdpclip.exe` are matched against **this
+process's own session**, from `ProcessIdToSessionId(GetCurrentProcessId())` —
+explicitly *not* `WTSGetActiveConsoleSessionId`, which is a different session
+and would be the wrong answer on any host that also has someone at the physical
+console. A multi-session host runs one rdpclip per session; touching another
+session's is both wrong and, unelevated, not permitted anyway.
+
+**Verify.** Each surviving candidate's full image path is resolved with
+`QueryFullProcessImageNameW` through a `PROCESS_QUERY_LIMITED_INFORMATION`
+handle and required to equal
+`<GetSystemWindowsDirectoryW>\System32\rdpclip.exe`, compared with
+`CompareStringOrdinal(..., TRUE)` — the same call, the same ignore-case
+ordinal style, and the same fail-closed posture D-11 uses for the relay sender.
+A name match alone is never sufficient, and anything that fails the check is
+logged with the specific reason and left alone.
+`GetSystemWindowsDirectoryW` rather than `GetWindowsDirectoryW` is deliberate:
+on a Terminal Services host — exactly what this mod runs on — the latter can
+return a per-user private Windows directory, which would make every
+verification fail closed.
+
+**Zero and multiple matches are both real cases, handled explicitly.** Zero
+verified matches is not an error and not a stop: there is nothing to terminate,
+so the action proceeds to the launch step as a fresh start rather than a
+restart. More than one is not a reason to pick one arbitrarily: **every**
+verified match is terminated, and then exactly **one** replacement is launched.
+
+**Restart.** `TerminateProcess` on each verified match, then a **bounded wait on
+that process's handle** (2 s) plus a short fixed settle (250 ms) before the
+replacement is launched — not an assumption that termination is instantaneous.
+The wait is not ceremony. rdpclip binds itself to the session clipboard in two
+ways that are keyed to its *windows*: as a clipboard format listener
+(`AddClipboardFormatListener`; the older `SetClipboardViewer` chain on
+down-level paths) and as the clipboard **owner** publishing delayed-render
+formats on the remote side's behalf. Both are released only when its windows
+are destroyed, and a replacement that registers while the dying instance's
+window still exists can end up behind a stale delayed-render owner — which is
+precisely the wedged clipboard the button exists to clear. The settle exists on
+top of the handle wait because `WaitForSingleObject` on a process handle is
+satisfied when the last *thread* exits, whereas the USER-side rundown that
+destroys the windows is completed by the window manager afterwards and is not
+ordered before that signal. 250 ms is well past what that teardown takes and is
+imperceptible: the whole sequence runs on a background thread, so no UI waits
+on it. The launch is `CreateProcessW` on the same verified System32 path; the
+replacement inherits this process's session and token automatically.
+
+Per §4.1, the scan is **re-run after the settle and before the launch** — some
+builds respawn rdpclip themselves — and if one is already back, no second
+instance is started. That closes the race only up to the settle; a slower
+respawn would still land beside the replacement, so both outcomes are logged.
+
+**Gate.** `WTSClientProtocolType == kProtocolRdp`, in the button's enabled state
+*and* re-read from `g_WtsState` at the moment of the click, exactly as
+Disconnect and Minimize do (D-8). It is never actionable from a physical console
+session.
+
+**Thread.** The D-12 detached one-shot verbatim — no window, no message loop, no
+state past its own return — with `g_ClipboardRestartsInFlight` drained by a
+bounded 5 s wait in `Wh_ModUninit` (headroom over the sequence's ~2.3 s bounded
+worst case). It cannot run on the XAML UI thread: it blocks on process
+termination, and explorer.exe's message loop must never wait on that. One
+addition beyond D-12's shape: `g_ClipboardRestartBusy`, a compare-exchange
+latch that serializes restarts, because a second click while one is in flight
+would terminate the instance the first click had just launched. Extra clicks
+are logged and dropped.
+
+**Tooltip (Task 2).** Plain-language, in the style
+[D-33](#d-33-the-taskbar-thumbnail-toolbar-is-removed-its-rich-status-tooltip-moves-to-the-taskbar-embedded-panel)
+established for the client panel's buttons — what the click does to the
+session, not a restatement of the button's name — and the data loss is stated
+outright rather than softened: "Fixes copy-and-paste between this session and
+your computer by restarting the clipboard helper. Whatever is currently on the
+shared clipboard is discarded." §4.1 named this as the first of the three risks
+to state honestly rather than discover later. This is the host widget's first
+tooltip; the helper (`SetElementTooltip`) is the client mod's, copied verbatim
+so the two surfaces behave identically. Disconnect and Minimize were left
+without tooltips — adding them is a change to existing, live-confirmed UI that
+this task did not ask for, and it is cheap to do later as its own pass.
+
+**Presence line (Task 3, §4.2).** The same `ScanForRdpClipInSession` function
+serves both the action and the status check — one implementation, so the two can
+never disagree about what counts as present. It rides `QueryWtsState`, which the
+**existing 30 s WTS safety-net timer** already calls on every tick (and every
+`WM_WTSSESSION_CHANGE` besides), so **no new timer** — D-22's discipline. The
+result is stored on `WtsState` as a tri-state, which means the struct's existing
+change detection drives the widget refresh for it with no extra plumbing.
+
+The line is **report-the-negative-only**. When no verified rdpclip is found it
+shows "Clipboard helper not running"; when one *is* found it shows **nothing at
+all**, and there is deliberately no "clipboard OK" counterpart. §4.2 is explicit
+about why: an rdpclip that exists but is wedged is a real failure this check
+cannot distinguish, and claiming otherwise would be inventing a value the mod
+has no basis for — the same rule D-16 set for connection quality and D-33
+enforced on the reader side. The tri-state exists for the same reason: a failed
+`WTSEnumerateProcessesW` stays `Unknown` and is never rendered as "not
+running", and a console session stays `Unknown` too (there is no rdpclip there
+and never should be). The restart worker calls `QueryWtsState` when it finishes
+so the line updates immediately instead of up to 30 s later — through the same
+function, not a second status path.
+
+**One incidental change:** the default `PanelWidth` went from 220 to 260 px. A
+third button and a third text line do not fit legibly at 220; existing saved
+settings are untouched.
+
+**Verification.** `compile-check.ps1` passes end to end — compile plus the real
+link step (D-32) to a fresh DLL with the mod's own `@compilerOptions`, and the
+settings block validates. Zero warnings from the host mod. **Not live-tested.**
+Per the root `EXPANSION_RESEARCH.md` §6 "Sequencing", that live test is expected to
+exercise most of LOOP-005 as a side effect; LOOP-005 stays open until it
+actually happens.
+
+## D-36: Session duration is removed entirely; idle time stands alone
+
+**Date:** 2026-09-01. **Client mod v0.9.2 → v0.10.0.**
+
+The session-duration display is removed from every surface and from the wire —
+a real removal, not a relocation and not an always-zero field:
+
+- **Overlay status row** (`FormatOverlayStatus`): now idle time alone
+  (`idle 0:42`); the "is a session open" gate moved from the retired start
+  tick to the live frame handle (`GetRdpFrameForAction`).
+- **Panel status line** (`ApplyStateToWidget`): the duration-led line is
+  replaced by the host-parity `<state> · RDP` format (see D-38's Task 7 note).
+- **Panel tooltip** (`FormatEmbeddedStatusTooltip`): `Session 1h 23m · this PC
+  idle 4m` became `This PC idle 4m`.
+- **Wire:** `LocalWidgetStatus.sessionDurationMs` is deleted and
+  `kLocalWidgetStatusVersion` bumped **1 → 2**. Readers of a mismatched
+  version fail closed as before. A `static_assert(sizeof == 192)` now pins the
+  layout on both the mod side and the relay plugin's new read-only mirror
+  (D-38), so a future drift breaks the build instead of silently misreading.
+- **`GetSessionDurationMs` / `g_sessionStartTick`: deleted.** The reference
+  map before removal found exactly one consumer beyond duration display: the
+  D-29 "10 s into session" diagnostic used `GetSessionDurationMs() >= 10000`
+  as its trigger. That diagnostic keeps its own narrowly-named deadline tick
+  (`g_rdpEventsDiagDueTick`, stamped at the frame-latch hook point), scoped so
+  it can never grow back into a general session clock. The `OnConnected`
+  sink re-stamp existed only to tighten the clock's origin (D-15) and is gone;
+  the event is still logged as sink-liveness evidence (LOOP-007 a).
+- **`showSessionInfo` rescoped, not renamed.** The setting key survives (a
+  rename would silently drop saved settings) but its `$name` is now *Show
+  idle time* and its description describes exactly what it controls: the
+  overlay's idle row and the tooltip's idle line. Both branches still read it.
+
+D-15's placement rationale ("duration on both surfaces") is superseded for the
+duration half; its idle-time half — local input idle, deliberately not
+remote-session activity — stands unchanged.
+
+## D-37: Host Minimize root cause — the write-then-immediately-close DVC send races asynchronous delivery; the probe's drain was silently dropped in the D-12 adaptation
+
+**Date:** 2026-09-01. **Host mod v0.3.0 → v0.4.0.**
+
+**Symptom.** The host widget's Minimize button stopped working, while
+Disconnect and Restart Clipboard work. The structural difference: Minimize is
+the only action that crosses the DVC channel; the other two are purely local.
+
+**Root cause (identified from the code, stated specifically).**
+`SendMinimizeToClientAsync` called `WTSVirtualChannelClose` immediately after
+`WTSVirtualChannelWrite` returned. On a dynamic virtual channel the write
+completes when the data is QUEUED to the RDP stack, not when it is delivered;
+an immediate close races the asynchronous delivery and can tear the channel
+down before the queued byte reaches the client plugin's `OnDataReceived`. The
+probe trigger — the only send path ever proven on real hardware (LOOP-003,
+LOOP-006) — guarded against exactly this with a deliberate `Sleep(500)` before
+its close, commented "Give the last write time to drain before the channel
+tears down" (`dvc-plugin/probe/trigger/Trigger.cpp`). That drain was silently
+dropped when D-12 adapted the trigger's open-write-close into the host mod. A
+race also reconciles the history: LOOP-006's live successes and the current
+failures are the two outcomes of the same race, not contradictory evidence.
+
+**Fix.** The send is now open-write-**read**-close (`SendRelayCommandAsync`):
+a bounded `WTSVirtualChannelRead` (2 s) after the write, before the close. The
+relay plugin writes a status reply after processing every command (D-38), so
+the reply can only arrive after the command was received and acted on — a
+successful read IS the delivery confirmation, the principled replacement for
+the probe's sleep. A failed/timed-out read is logged as "delivery UNCONFIRMED"
+(an old relay build that never replies also lands there). Every step of the
+send logs its outcome. **Not verified on hardware** — this spans two machines;
+the log lines above are what the next live pass must show.
+
+## D-38: Client-to-host state channel — the relay answers every command with a status reply; the host reads before closing and polls; the client mod publishes its storage path in the registry
+
+**Date:** 2026-09-01. **Client mod v0.10.0, host mod v0.4.0, relay plugin
+v0.2.0 (its first version constant — `RELAY_VERSION_STRING`).** Builds the
+missing piece the root `EXPANSION_RESEARCH.md` §2.2 described: client → host signalling,
+by extending the existing relay plugin and channel rather than inventing a new
+mechanism, and deliberately WITHOUT the persistent-channel redesign §2.2
+warned about — the short-lived open-per-interaction shape stays; the host now
+also reads before it closes.
+
+**Status-file discovery — no path guessing.** The client mod's mstsc branch
+publishes its resolved `Wh_GetModStoragePath` directory at ModInit as REG_SZ
+`HKCU\Software\RDPSessionToolkit\ClientModStoragePath` (`PublishModStoragePath`,
+beside the D-23 secret). The relay plugin — not a Windhawk mod, cannot call
+`Wh_GetModStoragePath` — reads that value per command and appends the known
+filename. If the value is absent the answer is "state unknown", never a guess:
+the directory-name fragility D-26 eliminated is not reintroduced.
+
+**Relay plugin (v0.2.0).** On ANY received command it (1) forwards the byte to
+the client mod's receiver as before — except `0x03 RELAY_CMD_QUERY_STATUS`,
+which is answered locally and deliberately NOT forwarded, so the host can poll
+with zero side effect on the client; then (2) reads the status snapshot,
+validates magic/version/size and freshness (4 s staleness, same rule as the
+explorer branch), and (3) writes a `RelayStatusReply` back on the same
+still-open `IWTSVirtualChannel` before the host's close. The un-forwarded query
+byte is the one deliberate, documented deviation from D-10's pure-pass-through
+rule; the forwarding path for real commands is byte-as-is, unchanged.
+
+**Wire contract.** `RelayStatusReply`: packed `{DWORD magic 'RSRP'
+0x50525352; DWORD version 1; BYTE stateKnown; BYTE sessionActive; BYTE
+fullscreen; BYTE reserved}` — its own magic and version, same discipline as
+`LocalWidgetStatus` / `LocalWidgetCommandPayload`, never a bare byte.
+`stateKnown=0` means the fields are meaningless and must never be rendered as
+fact. Mirrored copies live in `RelayIds.h` (which also mirrors
+`LocalWidgetStatus` v2 read-only, with a 192-byte `static_assert` pin on both
+sides) and the host mod; D-10 keeps the copies reconciled. Command bytes now:
+0x01 minimize, 0x02 fullscreen toggle, 0x03 status query, 0x00 permanently
+unassigned.
+
+**Host mod.** One generalized sender (`SendRelayCommandAsync`,
+open-write-read-close, detached one-shot per D-12, in-flight counter drained
+5 s at unload) serves every click, and a **3 s poll** (`RELAY_POLL_TIMER_ID` on
+the existing WTS thread window; in the requested 2–4 s range) sends the status
+query through the exact same path — gated on RDP, latched so polls never
+stack, and deliberately quiet on failure (no per-tick log spam with no relay
+listening). Replies update a mutex-guarded `ClientView` cache with a 10 s
+staleness window, so a client that stops answering degrades to "unknown"
+rather than freezing a stale label. The reply is parsed defensively at offsets
+0 and 8 (`CHANNEL_PDU_HEADER`) since the server-side read framing is
+unverified on hardware; the log names the matching offset.
+
+**Consumer (Task 6).** The host widget's new fullscreen/windowed button sends
+0x02; the client mod's relay receiver forwards it to the shared
+`ToggleFullscreen` exactly as Minimize does (foreground note: the operator is
+inside the session, so mstsc is normally already the client's foreground
+window and D-14's no-foreground-no-chord gate passes; otherwise it refuses, as
+everywhere). The button is RDP-gated and re-checked at click time like every
+other action button, and relabels its glyph, accessible name, and tooltip from
+the cached client view — matching the client panel's own relabeling pattern —
+or states honestly that the mode is unknown. Host default `PanelWidth` 260 →
+300 for the fourth button (saved settings untouched). **None of this has run
+on real hardware** — LOOP-009.
+
+## D-39: Taskbar widgets are tracked per monitor's taskbar frame; the secondary-monitor margin bug was shared globals, not margin math
+
+**Date:** 2026-09-01. **Client mod v0.10.0, host mod v0.4.0.**
+
+**Symptom.** On a secondary monitor the taskbar-embedded panel left a large
+gap before the clock, as if reserving space for tray icons that are not there;
+the primary monitor's spacing was correct.
+
+**Root cause (the Task 3 hypothesis, verified against the code).** Windows 11
+builds a separate `Taskbar.TaskbarFrame` — with its own `RootGrid` and its own
+`SystemTray.SystemTrayFrame` — per monitor, and the
+`TaskListButton::UpdateVisualStates` hook fires for buttons on every monitor's
+taskbar, so `InjectWidgetInto` runs once per frame (its existing-widget check
+is per-RootGrid) and each frame got its own panel. But the bindings were
+single globals (`g_WidgetRoot`, `g_RootGrid`, `g_SystemTray`,
+`g_TrayResizeToken`): each injection overwrote the previous ones, and
+`BindSystemTray`'s cache short-circuit meant whichever monitor's tray bound
+FIRST supplied the width for every later margin computation, while
+`UpdateWidgetMargin` only ever re-margined the last-injected widget. Net
+effect: the secondary panel was pushed left by the primary monitor's much
+wider tray — exactly the reported gap — and tray resizes never updated the
+other panel at all.
+
+**Fix (both mods — the host shares the identical structure and the identical
+latent bug on a multimon session host).** A `WidgetInstance` list guarded by
+`g_WidgetMutex`, one entry per taskbar frame: weak refs to that frame's
+widget, RootGrid, its own monitor's tray, and that tray's SizeChanged token.
+`BindSystemTrayFor(widget)` finds the tray from THAT widget's own visual root;
+`UpdateWidgetMarginFor(widget, …)` uses only that instance's tray; the resize
+handler recomputes only its own widget's margin; refresh / theme / settings /
+removal iterate all live instances, each on its own dispatcher; dead entries
+are pruned at inject. The `[margin]` log lines now carry the widget pointer so
+a live multi-monitor pass can attribute each line. **Not verified on
+hardware.**
+
+## D-40: One shared visual spec for both widgets, with theme-INVERTED coloring applied live
+
+**Date:** 2026-09-01. **Client mod v0.10.0, host mod v0.4.0.**
+
+**Convergence.** The two panels now follow one written spec rather than two
+drifting styles, taking the better elements of each: the client's
+factory-style button construction became a shared `StyleActionButton` helper
+(the host's four hand-rolled button blocks now use it too); the host's
+two-line name-over-state text column was adopted as the status format on both
+(Task 7: `hostname` / `<state> · <protocol>`, duration gone per D-36, quality
+strictly in the tooltip and honestly labeled). The spec: panel corner radius
+8, content margin 12 left / 8 right, Segoe MDL2 glyphs on transparent
+borderless buttons with 7×3 padding, 6 px spacing, 4 px button corner radius,
+state line 2 pt below the name line. Applied as identical code in both files —
+the established SetElementTooltip copied-verbatim convention, since the mods
+are separate files by design (D-2).
+
+**Theme-aware inversion.** `IsSystemLightTheme` reads
+`HKCU\...\Themes\Personalize\SystemUsesLightTheme` — the value the TASKBAR
+follows (not `AppsUseLightTheme`); absent means dark, matching Windows'
+default. The panels render the OPPOSITE tone on purpose: a light taskbar gets
+the dark palette (dark acrylic tint, white text), a dark taskbar the light one
+(light tint, near-black text), so the widget keeps contrast against its
+surroundings instead of blending in. One `PanelPalette` struct carries tint,
+primary/secondary text, alert red, and warning amber, each with a
+per-palette value (the light panel's red/amber are the darker accessible
+variants). `ApplyThemeToWidget` paints a panel; every dynamic color in
+`ApplyStateToWidget` (the hung red, the clipboard amber) reads the same
+palette so the two can never disagree.
+
+**Live reaction.** A system theme flip broadcasts
+`WM_SETTINGCHANGE`/`"ImmersiveColorSet"` to top-level windows; each mod's
+existing hidden top-level window (the client's status window, the host's WTS
+window) watches for it, re-reads the registry, and — only on an actual flip —
+re-dispatches `ApplyThemeToWidget` + `ApplyStateToWidget` to every live panel
+on its own UI thread. Detection and palette are built once per file as the
+shared pattern; no new window, no new thread, no polling. **Rendering not
+verified on hardware.**
+
+## D-41: Operator verification closes the current live-test batch
+
+**Date:** 2026-09-06. **Client v0.10.0, host v0.4.0, relay v0.2.0.**
+
+The operator reports several days of issue-free live use of the current
+two-machine combination. This confirms the runtime behavior introduced by
+D-35 through D-40, including clipboard recovery, the DVC command/reply and
+client-state paths, fullscreen control, per-monitor taskbar placement, and
+live theme inversion. Earlier ``not live-tested`` and ``not verified on
+hardware`` statements in D-35 through D-40 are historical build notes
+superseded by this verification.

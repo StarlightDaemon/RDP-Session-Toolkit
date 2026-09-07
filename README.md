@@ -1,10 +1,10 @@
 # RDP Session Toolkit
 
-**Status: early.** Two components are built and ready to try — the client-side
-taskbar widget and the host-side taskbar widget, described below. Each works
-entirely on its own machine; everything involving cross-machine signaling is
-still in progress and not yet usable; see
-[What's not yet functional](#whats-not-yet-functional).
+**Status: working, personal-use toolkit.** The client and host taskbar widgets
+and the Dynamic Virtual Channel relay have been live-tested by the operator
+over several days, including the cross-machine control and status paths. The
+repository remains intentionally conservative about its trust boundary and is
+not yet packaged for general distribution.
 
 ## What this is
 
@@ -15,10 +15,8 @@ low-risk UI mod: it patches window behavior inside `mstsc.exe` and nothing else.
 
 This repository is a toolkit of components built around the same idea, aimed at a more
 ambitious, personal-use-primarily goal: a live taskbar widget on the client machine
-that eventually reflects state from inside the remote RDP session, wired together over
-an RDP Dynamic Virtual Channel (DVC). Right now, the toolkit's first component — a
-client-side taskbar widget — works entirely on its own, with no remote-session wiring
-yet.
+that reflects state from inside the remote RDP session, wired together over an RDP
+Dynamic Virtual Channel (DVC).
 
 This toolkit's client-side taskbar component specifically began as a fork of
 [Hide RDP Connection Bar](https://github.com/StarlightDaemon/Hide-RDP-Connection-Bar).
@@ -43,11 +41,8 @@ a fork of Hide RDP Connection Bar, extended with session controls and a status p
 the mod embeds in your own taskbar (from `explorer.exe`). Everything it does is entirely
 local to the client machine — it does not talk to the remote session host in any way yet.
 
-It's implemented and compiles cleanly against the Windhawk toolchain. It has run under
-Windhawk on a real session at least once (the relay-driven minimize was observed
-working), but the taskbar-embedded panel, the overlay, and all of the session controls
-below have not had their own live pass yet — treat them as ready to try, not as already
-confirmed working out of the box.
+It compiles cleanly against the Windhawk toolchain and has been live-tested by the
+operator across the panel, overlay, session controls, and relay-backed host actions.
 
 ### Installation
 
@@ -77,10 +72,11 @@ itself. The controls are:
   the same on-screen button, which stays visible while minimized.
 - **Disconnect** — cleanly closes the RDP session, the same as closing the window
   normally.
-- **Session time and idle time** — a row on the on-screen button (fullscreen sessions)
-  and the tooltip of the taskbar panel's status text (all sessions) show how long the
-  session has been open and how long *this computer's* keyboard and mouse have been
-  idle. That is deliberately local idle time, not remote-session activity.
+- **Idle time** — a row on the on-screen button (fullscreen sessions) and the tooltip
+  of the taskbar panel's status text (all sessions) show how long *this computer's*
+  keyboard and mouse have been idle. That is deliberately local idle time, not
+  remote-session activity. (The session-duration clock that used to sit beside it was
+  removed at v0.10.0.)
 - **Connection quality** — the same tooltip carries the quality level Remote Desktop
   itself reports (4 levels), with bandwidth and round-trip time. It says it is waiting
   until the first report arrives, and says so plainly if none can come.
@@ -105,16 +101,18 @@ As of **v0.6.0** the client mod also targets `explorer.exe` on the *client* mach
 (a single Windhawk mod can target more than one process). When loaded there, its
 **explorer.exe branch** puts a wide, always-visible RDP status panel directly into the
 Windows 11 taskbar — the same taskbar-XAML injection technique the host-side widget
-below uses. The panel shows the remote host name, the session duration and connection
-quality (or an honest "quality n/a" / "not responding" line), and five directly
-clickable buttons: Minimize / Restore / Fullscreen-toggle / Reconnect / Disconnect —
+below uses. The panel shows the remote host name over a state-and-protocol line
+("Active · RDP", or an honest "not responding" line) — the same two-line format the
+host widget uses — with idle time and connection quality in its tooltip, and five
+directly clickable buttons: Minimize / Restore / Fullscreen-toggle / Reconnect /
+Disconnect —
 for fullscreen and windowed sessions alike. It does nothing to the session on its own:
 it reads a status file the mstsc.exe branch writes once a second and sends its actions
 back over a local, secret-guarded message channel. Because both surfaces are now one
 mod id, the panel finds that status file directly (no sibling-directory guessing). To
-use only the taskbar panel, turn the mstsc side's *Show disconnect button* off and
-leave *Detect stuck sessions* on. It compiles cleanly but has not had a live pass under
-the merged architecture yet.
+use only the taskbar panel, leave *Show floating overlay button* off (its default).
+The panel renders and its status tooltip is live-confirmed; most of its command rows
+still await their own live pass.
 
 (This was previously a third, separate mod, `rdp-session-toolkit-taskbar-client-embedded`;
 it was folded into the client mod at v0.6.0 — see
@@ -134,30 +132,47 @@ mod), showing:
 - **Disconnect** — detaches the RDP client cleanly, same as the Start menu's
   Disconnect; the session keeps running. The button disables itself when the session
   is at the physical console, so it can't kick a locally-signed-in user.
+- **Minimize the client** — signals the connecting computer, over the toolkit's RDP
+  Dynamic Virtual Channel relay, to minimize its Remote Desktop window. The send now
+  reads the relay's reply back before closing the channel, which both confirms
+  delivery and fixed a race where the command could be dropped.
+- **Fullscreen / windowed toggle for the client** — switches the connecting
+  computer's Remote Desktop window between fullscreen and windowed over the same
+  relay. The relay's replies (and a lightweight every-few-seconds status query)
+  carry the client's current mode back, so the button labels its actual direction —
+  or says plainly that the state is unknown.
+- **Restart Clipboard** — kills and relaunches this session's `rdpclip.exe`, the
+  helper that carries copy-and-paste between your machine and the session, to fix
+  it when it wedges. It only ever touches a process in this session whose full
+  image path really is `%SystemRoot%\System32\rdpclip.exe`. **Restarting it
+  discards whatever is currently on the shared clipboard** — the button's tooltip
+  says so. Console-gated like Disconnect.
+- **Clipboard helper not running** — a line that appears when no clipboard helper
+  can be found in the session. When one *is* running the widget says nothing about
+  the clipboard at all: a helper that is running but wedged can't be told apart
+  from a healthy one, so it never claims the clipboard is fine.
 
-Like the client-side mod, everything it does is entirely local to its own machine —
-it detects and acts on the session it runs in, and does not talk to the client
-machine in any way yet. Install it the same way as the client mod (Windhawk →
-**New mod** → paste the file contents), but on the session host.
+Disconnect and Restart Clipboard act entirely locally on the session host; Minimize
+and the fullscreen toggle are the toolkit's cross-machine pipe (host mod → DVC relay
+plugin → client mod), which also carries the client's state back to the host. Install
+it the same way as the client mod (Windhawk → **New mod** → paste the file contents),
+but on the session host.
 
-It compiles cleanly against the Windhawk toolchain but hasn't had its first live
-pass loaded under Windhawk yet — treat it as ready to try, not as already confirmed
-working out of the box.
+It compiles cleanly against the Windhawk toolchain and has been live-tested by the
+operator, including taskbar injection, RDP gating, clipboard recovery, and relay-backed
+client controls.
 
-## What's not yet functional
+## Cross-machine control
 
-- **True cross-machine control** — for example, triggering a minimize on the client from
-  something happening on the session host. Nothing today sends a real signal across the
-  RDP connection.
-- The client-side mod does already contain a hidden message-window "relay receiver"
-  stub, wired up in advance for a future signal to arrive at. Don't read anything into
-  its presence: nothing currently sends it a real signal, so it doesn't do anything yet.
-  It only responds to a manual, local debug toggle that fires a fake test signal to
-  itself — that's a developer aid, not cross-machine control.
-- A separate, throwaway proof-of-mechanism experiment (`dvc-plugin/probe/`) exists to
-  test whether the underlying DVC signaling mechanism works at all. It hasn't been run
-  through its required two-machine live test yet, and it isn't the real relay — it's a
-  gating experiment for a decision that hasn't been made.
+The cross-machine pipe is live-proven: host mod → DVC relay plugin
+(`dvc-plugin/relay/`, a standalone out-of-process COM LocalServer the RDP client
+activates) → the client mod's relay receiver. As of host v0.4.0 / relay v0.2.0 the
+pipe is two-way per interaction: every command the host sends is answered by a small
+status reply carrying the client's session/fullscreen state, read back before the
+channel closes. The reply leg, fullscreen command, and host periodic state poll have
+also been live-tested. (`dvc-plugin/probe/` is the
+retired throwaway experiment that first proved the DVC activation mechanism; it is
+kept as reference only.)
 
 For the full target architecture, the reasoning behind these decisions, and current
 open questions, see [`HANDOFF.md`](HANDOFF.md) and
@@ -170,8 +185,9 @@ detail here.
   the client-side mod (`client/`, targeting both `mstsc.exe` and — since v0.6.0 —
   `explorer.exe` for the taskbar-embedded panel) and the host-side mod (`host/`),
   both built, see above
-- [`dvc-plugin/`](dvc-plugin/README.md) — the planned standalone DVC relay executable
-  (a throwaway activation probe exists; the real relay is not started)
+- [`dvc-plugin/`](dvc-plugin/README.md) — the standalone DVC relay executable
+  (`relay/`, the production plugin at v0.2.0) plus the retired activation probe
+  (`probe/`, kept as reference)
 
 ## License
 

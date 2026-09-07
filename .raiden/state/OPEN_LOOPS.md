@@ -1,7 +1,7 @@
 # Open Loops
 
-- **LOOP-001 — Live-test the ported client mod (open, operator; narrowed
-  2026-09-01):** the ported `rdp-session-toolkit-taskbar-client.wh.cpp` v0.2.1
+- **LOOP-001 — Client-mod live test — RESOLVED 2026-09-06
+  (operator-reported):** the ported `rdp-session-toolkit-taskbar-client.wh.cpp` v0.2.1
   compiles cleanly but has not been loaded under Windhawk. V1's last actual
   operator live test passed at v1.1.1. Beyond the fork's rename (new mod id →
   new settings/storage scope) and the relay receiver + debug toggle, the
@@ -53,7 +53,8 @@
   message until v0.9.0; it is now `g_msgSinkTeardown`, carrying the event
   sink's Unadvise alone — D-33. The comparison is unchanged.) Worth aligning in
   a future cleanup pass; not urgent.
-- **LOOP-005 — Live-test the host-side mod (open, operator):**
+- **LOOP-005 — Host-mod live test — RESOLVED 2026-09-06
+  (operator-reported):**
   `host/rdp-session-toolkit-taskbar-host.wh.cpp` v0.2.0 compiles cleanly but
   has never been loaded under Windhawk. Needs its first manual pass on a real
   Windows 11 session host: widget injection into the taskbar XAML tree,
@@ -90,6 +91,22 @@
     looks identical whether the event registration works or the 30 s safety-net
     timer is quietly carrying it. This needs the registration's own log line, or
     an observed refresh faster than 30 s — not the display alone.
+
+  **Widened 2026-09-01 (host mod v0.3.0, D-35) — and the same live pass is
+  expected to close most of what is left here.** The host mod gained a **Restart
+  Clipboard** button and a **"clipboard helper not running"** line, so this
+  loop's first pass now also owes: the button appearing and being RDP-gated
+  (which is the *same* console-vs-RDP negative already outstanding above — one
+  deliberate console-session pass now covers three buttons instead of two), a
+  real restart actually restoring copy-and-paste, the exact-path verification
+  accepting the genuine System32 rdpclip (its log lines name every candidate it
+  skips and why), the zero-match path behaving as a fresh start, and the
+  presence line appearing when no helper is running *and staying silent when one
+  is*. This is the sequencing the root `EXPANSION_RESEARCH.md` §6 called for: landing one
+  feature whose test forces a full host-side pass is worth more than landing
+  three onto a widget nobody has watched work. **Note the direction of that
+  claim — the live test is expected to exercise much of this loop; it has not
+  happened, and nothing here is resolved by the build.**
 - **LOOP-006 — Full end-to-end minimize feature live test — RESOLVED
   2026-08-21 (operator-observed).** The whole cross-machine pipe — host mod
   Minimize button → `WTSVirtualChannelWrite('dvc::taskbar::relay', 0x01)` →
@@ -115,7 +132,8 @@
   occasion this entry was written from. The "recorded on the operator's direct
   report, no transcript" caveat above no longer carries the whole weight of the
   claim.
-- **LOOP-007 — Live-test the v0.4.0 client-mod features (open, operator):**
+- **LOOP-007 — Client-mod feature live test — RESOLVED 2026-09-06
+  (operator-reported):**
   the five features added in the 2026-08-21 overnight session — fullscreen/
   windowed toggle (Ctrl+Alt+Break injection), session duration / idle display
   (overlay row + status-icon tooltip), connection-quality indicator (second
@@ -222,7 +240,8 @@
     `… (frame WM_DESTROY)`). The teardown paths in particular are *not* covered
     by the confirmed thumbnail-toolbar removal: what was confirmed there is the
     absence of thumb-bar log lines, not the presence of the sink's own.
-- **LOOP-008 — Live-test the taskbar-embedded client widget (open, operator):**
+- **LOOP-008 — Taskbar-embedded client widget live test — RESOLVED
+  2026-09-06 (operator-reported):**
   `client-embedded/rdp-session-toolkit-taskbar-client-embedded.wh.cpp` v0.1.0
   and the client mod's v0.5.0 additions (status snapshot,
   `CitadelRdpTaskbarLocalWidget` receiver, shared secret) compile cleanly but
@@ -283,7 +302,12 @@
   full-featured client surface, so this loop is the one that matters most. Two
   new things to check on top of everything above, both purely presentational
   (no channel or state change is involved):
-  - **The migrated status tooltip.** Hover the panel's host-name / status text
+  - **The migrated status tooltip.** *(Re-scoped 2026-09-01 by D-36: the
+    duration half is REMOVED — the first line is now `This PC idle <coarse>`
+    under *Show idle time*, and the panel's one-line status text is
+    `<state> · RDP`, not a duration. Read the expectations below with that
+    substitution; LOOP-009 carries the v0.10.0-specific checks.)* Hover the
+    panel's host-name / status text
     with a session open. Expect up to three lines, rebuilt on this side from
     the status snapshot rather than read from mstsc: `Session <coarse> · this
     PC idle <coarse>` (with *Show session duration and idle time* on),
@@ -353,7 +377,72 @@
 
 ### LOOP-SWEEP-20260831-001 — RDP Session Toolkit doctor WARN — state_unrecognized
 
-- Status: open
-- Gate: operator
-- Success Condition: `raiden_updater.cli doctor --instance <path to RDP Session Toolkit>` no longer reports WARN for check `state_unrecognized` (next fleet sweep shows it OK).
+- Status: RESOLVED 2026-09-06
+- Resolution: moved the non-schema `EXPANSION_RESEARCH.md` and `ROADMAP.md`
+  documents from `.raiden/state/` to the repository root, preserving their
+  tracked content while restoring the v2 state-file set.
+- Verification: `raiden_updater.cli doctor --instance <path to RDP Session Toolkit>`:
+  10 OK, 0 WARN, 0 FAIL.
 - Check: doctor:RDP Session Toolkit:state_unrecognized
+
+- **LOOP-009 — 2026-09-01 second-session batch live test — RESOLVED
+  2026-09-06 (operator-reported; two machines):** client v0.10.0, host v0.4.0, relay plugin v0.2.0.
+  Everything below compiles and links clean but none of it has executed on
+  real hardware, and most of it cannot be exercised from one machine.
+  - **Host Minimize fix (D-37).** Click Minimize on the host; expect the host
+    log to show `Minimize send: wrote 0x01 … waiting for the relay's reply`
+    then `delivery confirmed (N-byte reply)`, and the client's mstsc window to
+    minimize reliably across repeated clicks. `WTSVirtualChannelRead
+    failed/timed out … delivery of 0x01 is UNCONFIRMED` with the NEW relay
+    registered means the reply leg is broken; with an old relay build it is
+    expected. Note LOOP-006's earlier "proven" state is now understood as one
+    side of a race (D-37) — repeated success, not a single observation, is
+    the bar here.
+  - **Reply parse framing.** The host parses the reply at offset 0 and offset
+    8 (CHANNEL_PDU_HEADER) and logs which matched (`Relay reply: parsed at
+    offset N`). Record which offset real hardware produces; the other branch
+    can then be documented as dead or kept as belt-and-braces.
+  - **Client → host state channel (D-38).** With a session open and the
+    client mod loaded: relay log shows `status reply written … known=1
+    active=1 fullscreen=…` (and the registry/staleness rejection lines when
+    the client mod is disabled); host log shows the 3 s poll updating the
+    cached view; toggling fullscreen FROM THE CLIENT relabels the host
+    button within ~3 s.
+  - **Host fullscreen button (Task 6/D-38).** Clicking it toggles the
+    client's window; the client log shows `Relay: command 0x02` and
+    `Relay fullscreen toggle command — frame … sending Ctrl+Alt+Break`; the
+    button's glyph/tooltip always names the direction it will actually take.
+    With the relay or client mod absent the button must say the state is
+    unknown, not guess.
+  - **Client mod registry publication.** mstsc log shows `ModStorage: publish
+    HKCU\Software\RDPSessionToolkit\ClientModStoragePath ok`.
+  - **Status-file v2.** Both branches at v0.10.0: panel shows state normally.
+    A deliberately mismatched pair (old explorer branch reading a v2 file, or
+    the reverse) must show "no session" / stale — fail-closed, not garbage.
+  - **Duration removal (D-36).** Overlay row shows `idle M:SS` only; panel
+    line shows `<state> · RDP`; tooltip's first line is `This PC idle …`;
+    *Show idle time* off removes exactly that line/row.
+  - **Per-monitor margins (D-39).** On a multi-monitor client: each monitor's
+    panel sits correctly beside ITS OWN tray/clock (the reported
+    secondary-monitor gap is gone); `[margin]` log lines carry distinct
+    `widget=` pointers; adding/removing tray icons on one monitor re-margins
+    only that monitor's panel. Same check on a multimon session host for the
+    host widget.
+  - **Theme inversion (D-40).** Panels render dark-on-light / light-on-dark
+    per the system theme at injection, and FLIP LIVE when the Windows theme
+    is changed while the panel is showing (`[theme] system theme now …` in
+    both logs). Contrast check on both palettes, including the hung red and
+    clipboard amber variants.
+  - **Host tooltips (Task 4).** Hover Minimize, Disconnect, Restart
+  Clipboard, and the fullscreen button on the host widget — all four show
+  their plain-language tooltips.
+
+## Verification update — 2026-09-06
+
+The operator reports several days of issue-free use of the current client,
+host, and relay builds. That verification covers the scenarios enumerated by
+LOOP-001, LOOP-005, LOOP-007, LOOP-008, and LOOP-009, which are therefore
+resolved. LOOP-002's multi-session instance-targeting limitation, LOOP-004's
+low-priority untimed debug self-test cleanup, and the RAIDEN doctor warning
+remain open as non-blocking follow-up work; none represents a reported runtime
+failure.

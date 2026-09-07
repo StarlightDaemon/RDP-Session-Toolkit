@@ -148,6 +148,89 @@ static void ForwardFirstByte(BYTE cmd)
 }
 
 // ===========================================================================
+// BuildStatusReply: fill a RelayStatusReply from the client mod's status
+// snapshot, or leave it stateKnown=0 when no trustworthy snapshot exists.
+//
+// The snapshot's location comes from the registry value the client mod
+// publishes at its own ModInit (HKCU\Software\RDPSessionToolkit\
+// ClientModStoragePath) — the mod's actual resolved Wh_GetModStoragePath
+// directory, which this plugin cannot compute itself. No directory-name
+// guessing (the fragility DECISIONS.md D-26 eliminated is not reintroduced):
+// if the value is absent, the answer is "state unknown", never a guess.
+//
+// Every rejection path is logged with its specific reason and reports
+// stateKnown=0 — the host must never render a stale or unreadable snapshot
+// as fact (the same rule as the explorer branch's own staleness handling).
+// ===========================================================================
+static void BuildStatusReply(RelayStatusReply* reply)
+{
+    memset(reply, 0, sizeof(*reply));
+    reply->magic   = RELAY_STATUS_REPLY_MAGIC;
+    reply->version = RELAY_STATUS_REPLY_VERSION;
+
+    wchar_t dir[MAX_PATH] = {};
+    DWORD cb = sizeof(dir) - sizeof(wchar_t);
+    LSTATUS r = RegGetValueW(HKEY_CURRENT_USER, RELAY_STATUS_REG_KEY,
+                             RELAY_STATUS_REG_VALUE, RRF_RT_REG_SZ,
+                             nullptr, dir, &cb);
+    if (r != ERROR_SUCCESS || !dir[0])
+    {
+        RelayLog("status: HKCU\\%ls\\%ls absent/unreadable (%ld) -- the client "
+                 "mod has not published its storage path; state unknown",
+                 RELAY_STATUS_REG_KEY, RELAY_STATUS_REG_VALUE, (long)r);
+        return;
+    }
+
+    std::wstring path(dir);
+    if (!path.empty() && path.back() != L'\\') path += L'\\';
+    path += RELAY_STATUS_FILENAME;
+
+    // Same share mode the explorer branch reads with, against the writer's
+    // OPEN_ALWAYS + single-WriteFile discipline (a reader never sees a
+    // truncated record).
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE)
+    {
+        RelayLog("status: snapshot open failed GLE=%lu (%ls) -- state unknown",
+                 GetLastError(), path.c_str());
+        return;
+    }
+    RelayClientStatus s;
+    DWORD bytesRead = 0;
+    BOOL ok = ReadFile(hFile, &s, sizeof(s), &bytesRead, nullptr);
+    CloseHandle(hFile);
+    if (!ok || bytesRead != sizeof(s))
+    {
+        RelayLog("status: snapshot short read (%lu of %lu bytes, ok=%d) -- "
+                 "state unknown", bytesRead, (unsigned long)sizeof(s), (int)ok);
+        return;
+    }
+    if (s.magic != RELAY_CLIENT_STATUS_MAGIC ||
+        s.version != RELAY_CLIENT_STATUS_VERSION)
+    {
+        RelayLog("status: snapshot magic/version 0x%08lX/%lu != expected "
+                 "0x%08lX/%lu -- a mismatched client mod build; state unknown",
+                 s.magic, s.version,
+                 (unsigned long)RELAY_CLIENT_STATUS_MAGIC,
+                 (unsigned long)RELAY_CLIENT_STATUS_VERSION);
+        return;
+    }
+    unsigned long long now = GetTickCount64();
+    if (s.writeTick > now || now - s.writeTick > RELAY_CLIENT_STATUS_STALE_MS)
+    {
+        RelayLog("status: snapshot stale (writeTick=%llu now=%llu) -- state "
+                 "unknown", s.writeTick, now);
+        return;
+    }
+
+    reply->stateKnown    = 1;
+    reply->sessionActive = s.sessionActive ? 1 : 0;
+    reply->fullscreen    = s.fullscreen ? 1 : 0;
+}
+
+// ===========================================================================
 // RdpChannelCallback
 // ===========================================================================
 
@@ -189,8 +272,18 @@ ULONG STDMETHODCALLTYPE RdpChannelCallback::Release()
     return c;
 }
 
-// A DVC signal arrived from the host mod. Validate it is non-empty, then relay
-// its first byte onward. This plugin does no protocol logic of its own.
+// A DVC signal arrived from the host mod. Validate it is non-empty, relay its
+// first byte onward (except the status query, which is answered locally with
+// no side effect on the client), then ALWAYS write the status reply back on
+// this still-open channel before the host closes it.
+//
+// The reply is the one deliberate exception to this plugin's original
+// pure-pass-through rule (D-10): it recognizes exactly one byte value
+// (RELAY_CMD_QUERY_STATUS) as its own, and it composes the reply itself. The
+// forwarding path for every real command is byte-as-is, unchanged. The reply
+// also serves as the host's delivery confirmation — the host's read leg
+// blocks on it, which is what closed the write-then-immediate-close delivery
+// race on the host side (the probe's Sleep-before-close, done properly).
 HRESULT STDMETHODCALLTYPE RdpChannelCallback::OnDataReceived(ULONG cbSize, BYTE* pBuffer)
 {
     if (!pBuffer || cbSize == 0)
@@ -200,10 +293,31 @@ HRESULT STDMETHODCALLTYPE RdpChannelCallback::OnDataReceived(ULONG cbSize, BYTE*
         return S_OK;
     }
 
-    const BYTE cmd = pBuffer[0];  // first byte, forwarded as-is
-    RelayLog("[Ch%lu] DVC signal: %lu byte(s), forwarding first byte 0x%02X",
-             m_channelId, cbSize, cmd);
-    ForwardFirstByte(cmd);
+    const BYTE cmd = pBuffer[0];
+    if (cmd == RELAY_CMD_QUERY_STATUS)
+    {
+        RelayLog("[Ch%lu] DVC status query (0x%02X) -- answered locally, "
+                 "deliberately not forwarded (no side effect on the client)",
+                 m_channelId, cmd);
+    }
+    else
+    {
+        RelayLog("[Ch%lu] DVC signal: %lu byte(s), forwarding first byte 0x%02X",
+                 m_channelId, cbSize, cmd);
+        ForwardFirstByte(cmd);
+    }
+
+    // Reply on every command — the host reads exactly one reply per send.
+    if (m_channel)
+    {
+        RelayStatusReply reply;
+        BuildStatusReply(&reply);
+        HRESULT hr = m_channel->Write(sizeof(reply),
+                                      reinterpret_cast<BYTE*>(&reply), nullptr);
+        RelayLog("[Ch%lu] status reply written hr=0x%08lX (known=%u active=%u "
+                 "fullscreen=%u)", m_channelId, (unsigned long)hr,
+                 reply.stateKnown, reply.sessionActive, reply.fullscreen);
+    }
     return S_OK;
 }
 

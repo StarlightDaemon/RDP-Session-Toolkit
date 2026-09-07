@@ -279,3 +279,123 @@
   resolve. Replaced its four uses with a local volatile-wipe `WipeSecret`
   (shared section); full link now succeeds. `compile-check.ps1` still only
   compiles (`-c`) — a link step would be a worthwhile follow-up.
+
+## 2026-09-01 — Host mod v0.3.0: restart rdpclip + clipboard presence line (D-35)
+
+Built the root `EXPANSION_RESEARCH.md`'s #1 recommendation, as specified there rather
+than redesigned: §4.1's restart action and §4.2's presence line, both on the
+host widget. No new channel, no new IPC, no new thread model, no client-side
+change, and no `@compilerOptions` change.
+
+- **Task 1 — find / verify / restart.** `ScanForRdpClipInSession` is the single
+  shared find-and-verify function (used by both the action and the status line,
+  so they cannot disagree): `WTSEnumerateProcessesW`, name-matched
+  case-insensitively, scoped to `ProcessIdToSessionId(GetCurrentProcessId())`
+  — *not* the active console session — then each candidate's
+  `QueryFullProcessImageNameW` path required to equal
+  `<GetSystemWindowsDirectoryW>\System32\rdpclip.exe` via
+  `CompareStringOrdinal(..., TRUE)`, D-11's exact call and style. Skips are
+  logged with their specific reason. `GetSystemWindowsDirectoryW` is the
+  TS-correct call here; `GetWindowsDirectoryW` can return a per-user private
+  Windows directory on a Terminal Services host and would fail every check
+  closed. **Zero matches** → nothing to terminate, proceed to launch as a fresh
+  start. **Multiple matches** → terminate every verified one, launch exactly one
+  replacement. Each termination is followed by a bounded 2 s wait on the process
+  handle, then a 250 ms settle — investigated and documented in D-35: rdpclip's
+  format-listener registration *and* its delayed-render clipboard ownership are
+  both keyed to its windows, and the USER-side rundown that destroys them is not
+  ordered before the process handle signals. Then a re-scan (per §4.1, some
+  builds respawn it) and `CreateProcessW` on the verified path.
+- **Gating and threading.** RDP-only, re-read from `g_WtsState` at click time
+  (D-8), never actionable from a console session. D-12's detached one-shot with
+  `g_ClipboardRestartsInFlight` drained by a bounded 5 s wait in
+  `Wh_ModUninit`; plus `g_ClipboardRestartBusy`, a compare-exchange latch so a
+  double click cannot kill the instance the first click just launched.
+- **Task 2 — the button.** `Restart Clipboard`, Segoe MDL2 Paste glyph
+  (0xE77F), column 1 (Minimize and Disconnect shifted to 2 and 3), same
+  transparent/white/disabled-at-0.35-opacity treatment as its neighbours.
+  First tooltip on the host widget — `SetElementTooltip` copied verbatim from
+  the client mod so the two surfaces match — stating the data loss outright:
+  "…Whatever is currently on the shared clipboard is discarded." Disconnect and
+  Minimize deliberately left untooltipped; that is a change to live-confirmed
+  UI this task did not ask for.
+- **Task 3 — the presence line.** A tri-state `ClipboardHelper` field on
+  `WtsState`, filled in `QueryWtsState` (which the existing 30 s safety-net
+  timer already drives — **no new timer**), so the struct's existing change
+  detection refreshes the widget for free. Shows "Clipboard helper not running"
+  on `NotRunning` and **nothing at all** otherwise — no "clipboard OK", ever,
+  because a wedged-but-present rdpclip is indistinguishable (§4.2, and D-16's
+  never-invent-a-value rule). A failed enumeration and a console session both
+  stay `Unknown`. The restart worker calls `QueryWtsState` on completion so the
+  line updates immediately rather than up to 30 s later.
+- **Task 4 — docs and version.** D-35 written (citing D-8, D-11, D-12 and
+  §4.1/§4.2 as the design basis); ROADMAP gains a "Built 2026-09-01 (host mod
+  v0.3.0), pending live test" section moving this from recommended to built;
+  LOOP-005 widened with what the new feature owes and the note that its live
+  test is *expected* to exercise most of that loop — explicitly **not** marked
+  resolved, since that needs a real test and not a build. Version 0.2.0 →
+  0.3.0, `@description`, readme block and `Wh_ModInit` banner all bumped.
+  Incidental: default `PanelWidth` 220 → 260, since a third button and a third
+  text line do not fit legibly at 220.
+- **Verification.** `compile-check.ps1` clean end to end — compile *and* the
+  real `-shared` link step (D-32) for both mods, settings blocks validate. Zero
+  warnings from the host mod; the client's single `GetRdpMonitorRect`
+  unused-function warning is pre-existing and untouched. Nothing committed or
+  pushed. **Nothing live-tested.**
+
+## 2026-09-01 (second session — duration removal, minimize fix, client→host channel, per-monitor margins, theme)
+
+- **Client mod v0.9.2 → v0.10.0, host mod v0.3.0 → v0.4.0, relay plugin →
+  v0.2.0** (its first version constant). Compile-check (compile + real link +
+  settings YAML) run after every task; relay rebuilt via its build.ps1.
+- **Session duration removed entirely** (D-36): overlay row, panel line,
+  tooltip, and the wire field (`LocalWidgetStatus` v1 → v2). Idle time stands
+  alone; `showSessionInfo` rescoped to *Show idle time*. The one non-display
+  consumer of the start tick — the D-29 10-s diagnostic — got its own
+  deadline tick. 192-byte static_assert layout pins added on both the mod and
+  the relay mirror.
+- **Host Minimize root cause found and fixed** (D-37): the open-write-close
+  send closed the DVC immediately after a queued (not delivered) write; the
+  live-proven probe trigger drained 500 ms before closing and that drain was
+  dropped in the D-12 adaptation. Fix: open-write-READ-close — the relay's
+  new reply is the delivery confirmation.
+- **Client → host state channel built** (D-38, EXPANSION_RESEARCH §2.2's
+  missing piece): client mod publishes its storage dir at
+  `HKCU\Software\RDPSessionToolkit\ClientModStoragePath`; relay plugin reads
+  the status snapshot and answers EVERY command with a `RelayStatusReply`
+  ('RSRP' v1) on the still-open channel; a 0x03 status query is answered
+  without forwarding; host polls it every 3 s and caches the client view with
+  a 10 s staleness window. Host gained the fullscreen/windowed toggle button
+  (relay 0x02 → shared `ToggleFullscreen`), relabeling from the cached view.
+- **Per-monitor widget instances in both mods** (D-39): the reported
+  secondary-monitor margin gap was the single-global tray binding — whichever
+  monitor's tray bound first drove every monitor's margin. One tracked
+  instance per taskbar frame now.
+- **Visual convergence + theme inversion** (D-40): one shared spec (shared
+  `StyleActionButton`, host's two-line status format on both, spacing/radius
+  numbers written down); panels render the OPPOSITE of the system theme and
+  react live to `WM_SETTINGCHANGE("ImmersiveColorSet")`.
+- Host Minimize/Disconnect tooltips added (Task 4), matching the established
+  plain-language style; Restart Clipboard's verified code-side (same
+  live-confirmed SetElementTooltip mechanism).
+- Docs: D-36..D-40, ROADMAP second-session section, LOOP-009 (+ LOOP-008
+  re-scope note), README refreshed where this session made it stale.
+- **Nothing in this session has run on real hardware** — it spans two
+  machines; LOOP-009 is the checklist.
+
+## 2026-09-06 (operator verification and documentation reconciliation)
+
+- The operator reports several days of issue-free use of the current client
+  v0.10.0, host v0.4.0, and relay v0.2.0 combination. This closes the manual
+  verification work in LOOP-001, LOOP-005, LOOP-007, LOOP-008, and LOOP-009:
+  client panel/overlay, host widget, clipboard recovery, DVC command/reply,
+  state polling, fullscreen control, per-monitor layout, and live theme
+  handling all work in practice.
+- Reconciled the public README and component documentation with that verified
+  state. The retained DVC activation probe is documented as historical source,
+  not a future placeholder.
+- Removed the unused client `GetRdpMonitorRect` helper and the ignored,
+  unsigned root `nul.exe` artifact. Compile/link verification remains clean.
+- Relocated `EXPANSION_RESEARCH.md` and `ROADMAP.md` from `.raiden/state/` to
+  the repository root because state schema v2 does not recognize them there.
+  The subsequent RAIDEN doctor is clean: 10 OK, 0 WARN, 0 FAIL.

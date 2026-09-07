@@ -6,8 +6,17 @@ COM `LocalServer32` plugin that `mstsc` activates from the per-user `AddIns`
 registry (no admin). On receiving a Dynamic Virtual Channel signal from the
 host-side Windhawk mod, it relays the payload's **first byte, as-is** to the
 client-side mod's `CitadelRdpTaskbarRelay` message-only window via
-`WM_COPYDATA`. It performs no protocol logic of its own — a pure pass-through
-from the DVC channel to the existing window-message contract.
+`WM_COPYDATA` — with one deliberate exception since **v0.2.0** (D-38): the
+status-query byte `0x03` is answered locally and never forwarded, so the host
+can poll with no side effect on the client. After processing **any** command,
+the plugin writes a small `RelayStatusReply` (magic + version + the client's
+session/fullscreen state) back on the still-open channel before the host
+closes it. The state comes from the client mod's once-a-second status
+snapshot, located via the `HKCU\Software\RDPSessionToolkit\ClientModStoragePath`
+value the client mod publishes (no directory guessing); a missing, stale, or
+version-mismatched snapshot is answered as *state unknown*, never guessed.
+The reply is also the host's delivery confirmation — its read leg is what
+fixed the Minimize button's dropped-command race (D-37).
 
 > The probe is kept in this repo unchanged as historical reference documenting
 > how the underlying activation + DVC-delivery mechanism was verified

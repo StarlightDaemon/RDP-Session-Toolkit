@@ -11,4 +11,6 @@
   the remote session, without merging the added trust/complexity into the original
   Hide RDP Connection Bar repo.
 
-Nothing above is built yet; this file records intent, not progress.
+All three goals are built and have been live-tested by the operator. Current
+verification and remaining hardening work are recorded in `CURRENT_STATE.md`
+and `OPEN_LOOPS.md`.

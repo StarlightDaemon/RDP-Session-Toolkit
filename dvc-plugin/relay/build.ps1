@@ -43,7 +43,7 @@ Write-Host "Building relay plugin ($triple)..."
     (Join-Path $here 'plugin\Main.cpp') `
     (Join-Path $here 'plugin\RdpRelayPlugin.cpp') `
     '-o' (Join-Path $bin 'dvc-relay-plugin.exe') `
-    '-lole32' '-loleaut32' '-luuid' '-luser32'
+    '-lole32' '-loleaut32' '-luuid' '-luser32' '-ladvapi32'
 if ($LASTEXITCODE -ne 0) { throw "relay plugin build failed" }
 
 Write-Host ""
