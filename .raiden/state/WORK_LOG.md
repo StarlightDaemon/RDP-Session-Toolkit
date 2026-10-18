@@ -685,3 +685,26 @@ change, and no `@compilerOptions` change.
 - Documentation/state changes only. No runtime sources, prerelease assets,
   production registration, installed mods or RDP sessions were changed; no
   new runtime test or RAIDEN doctor execution was performed.
+
+## 2026-10-17 — reconcile CURRENT_STATE with implementation and publication
+
+- Reviewed CURRENT_STATE against current mod/relay metadata and runtime
+  contracts, D-41 through D-45, the reconciled loop ledger, the implementation
+  review, home guide and published GitHub prerelease metadata.
+- Replaced the accumulated historical build narrative with a current overview:
+  component/source targets, guarded protocol and snapshot v3, owned work and
+  callback teardown, registration scope, diagnostic behavior and the personal-use
+  trust boundary. Removed stale current-version, legacy byte/detached-thread,
+  pre-commit, and superseded test-gap claims. Earlier history remains in Git,
+  DECISIONS, WORK_LOG and the loop-ledger snapshot.
+- Added the published RC1 page and ZIP links, home/extended acceptance entry
+  points, and the distinction between the original release tag and refreshed
+  artifact documentation. Revisions, checksums and dated validation counts stay
+  in their existing fact homes. Candidate publication is not presented as live
+  acceptance, and earlier baseline evidence is not applied to the candidate.
+- CURRENT_STATE points to LOOP-002/010/011 for next work without duplicating
+  their formal dispositions. Source versions, process targets, protocol/snapshot
+  details, links and publication status were cross-checked; `git diff --check`
+  passed. Only CURRENT_STATE and this review record were changed. No runtime
+  source, prerelease asset, registration, installed mod or RDP session change,
+  and no new runtime test or RAIDEN doctor run, was performed.

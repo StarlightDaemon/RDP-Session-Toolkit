@@ -1,230 +1,118 @@
 # Current State
 
-## Repo Purpose
+## Repository purpose
 
-Companion repo to [Hide RDP Connection Bar](https://github.com/StarlightDaemon/Hide-RDP-Connection-Bar),
-housing the more complex, personal-use-primarily taskbar-integration work that does not
-belong in the simple-UI-mod trust boundary of that repo. See root `README.md` for the
-full architecture summary.
+Personal-use RDP taskbar controls, diagnostics and recovery helpers, companion
+to [Hide RDP Connection Bar](https://github.com/StarlightDaemon/Hide-RDP-Connection-Bar).
+The toolkit combines Windhawk mods on the connecting client and session host
+with a client-side out-of-process COM Dynamic Virtual Channel relay. See the
+root [README](../../README.md) for architecture and usage.
 
-## Status
+## Current implementation
 
-Repository bootstrapped 2026-08-20; first components landed the same day.
+| Component | Source version | Runs on |
+|---|---|---|
+| [Taskbar Client](../../taskbar-integration/client/rdp-session-toolkit-taskbar-client.wh.cpp) | 0.11.1 | Client PC: mstsc.exe and local explorer.exe |
+| [Taskbar Host](../../taskbar-integration/host/rdp-session-toolkit-taskbar-host.wh.cpp) | 0.5.1 | Session host: explorer.exe |
+| [DVC relay](../../dvc-plugin/relay/common/RelayIds.h) | 0.3.1 | Client PC: COM LocalServer activated by mstsc |
 
-**Latest verification — 2026-09-06 (operator-reported).** The operator has
-run the current client v0.10.0, host v0.4.0, and relay v0.2.0 combination for
-several days without issue. The client panel and overlay, host widget,
-clipboard action, DVC command/reply path, client-state polling, per-monitor
-layout, and live theme behavior are all confirmed working. Earlier
-``not live-tested`` statements below are preserved as the historical build
-record and are superseded by this verification.
+The client mod owns the primary taskbar panel and the optional floating
+fullscreen overlay. The overlay is off by default. The former thumbnail
+toolbar and separate embedded-panel mod are retired; their history is in
+DECISIONS and WORK_LOG. Reconnect and Force reconnect remain opt-in.
 
-- `taskbar-integration/` — reorganized into `client/` and `host/` subfolders
-  (pure move, pre-commit). **Client-side mod built** as
-  `client/rdp-session-toolkit-taskbar-client.wh.cpp`, now **v0.10.0** and
-  targeting both `mstsc.exe` and `explorer.exe` (D-26; the embedded panel bullet
-  below). **v0.10.0 (2026-09-01 second session, D-36..D-40; not live-tested —
-  LOOP-009):** session duration removed entirely (status snapshot at wire
-  version 2; *Show idle time* rescoped), per-monitor widget instances fixing
-  the secondary-monitor margin bug, the host-parity `<state> · RDP` status
-  line, theme-inverted live-reacting panel coloring, a relay fullscreen-toggle
-  command (0x02), and the registry-published storage path the relay plugin
-  reads the status snapshot from. The client-side pair now presents through **two independent
-  surfaces**: the **taskbar-embedded panel** (`explorer.exe`, D-21/D-26) is the
-  primary, always-visible, full-featured surface; the **floating overlay
-  button** (`mstsc.exe`, fullscreen-only) is off by default (`showOverlay`,
-  D-30). The **taskbar thumbnail toolbar**, the former third surface, was
-  **removed outright in v0.9.0 (D-33)** — its rich status tooltip was rebuilt on
-  the panel's own status text, and the panel's five action buttons gained
-  plain-language tooltips (v0.9.1). v0.9.2 (D-34) gave the panel's own
-  message-only window an unconditional 1 s status-write tick, closing the D-22
-  gap where a session with both `showOverlay` and `stuckDetection` off left the
-  panel — now the toolkit's only full-featured surface — showing "no session."
-  v0.7.0 (2026-08-22 overnight session): the panel's fullscreen toggle
-  hands mstsc the foreground right before the command (D-27); Reconnect and
-  Force reconnect are one opt-in setting, off by default, and a relaunch
-  re-checks its `.rdp` file on disk at launch time (D-28); the mod storage path
-  is resolved once instead of every second; and the connection-quality sink
-  now also hooks the control's real creation path — mstscax's own class factory,
-  identified from the binary — with step-by-step diagnostics (D-29; fix built,
-  and **live-confirmed 2026-09-01: the sink now advises for real. The event
-  itself, `OnNetworkStatusChanged`, has still never arrived with data** — that
-  is D-16's separate open assumption). Originally v0.4.0: a fork of
-  Hide RDP Connection Bar v1.1.9 (commit `dc82b10d…`, see D-6) carrying the
-  taskbar thumbnail toolbar — grown to six slots: Status icon, Minimize,
-  Restore, Fullscreen/windowed toggle, Reconnect, Disconnect (D-19) — **since
-  removed outright in v0.9.0 (D-33)**, its status tooltip migrated to the
-  taskbar-embedded panel; see the surfaces summary above. Also carries the
-  `CitadelRdpTaskbarRelay` message-window relay receiver with real sender
-  validation accepting only this mod or the registered relay plugin EXE
-  (WM_COPYDATA, minimize command; see D-5/D-11). v0.4.0 (2026-08-21 overnight
-  session) added the five roadmap features: Ctrl+Alt+Break fullscreen toggle
-  (D-14), session clock / local idle on the overlay and in the status tooltip
-  (D-15), a connection-quality indicator driven by a second `IMsTscAxEvents`
-  sink on the RDP control (D-16), a shared reconnect helper with
-  settings-backed display mode (D-17), and an `IsHungAppWindow` watchdog with a
-  manual Force-reconnect alert (D-18). Of the v0.4.0 features: the fullscreen
-  toggle's foreground path is **live-confirmed** (D-31, LOOP-007 (b) closed);
-  the quality sink's advise is **live-confirmed** but its event
-  (`OnNetworkStatusChanged`) has never arrived with data, narrowing rather than
-  closing LOOP-007 (a); the reconnect and watchdog paths are still untested
-  (LOOP-007 (c)–(f)). **Host-side mod built**
-  as `host/rdp-session-toolkit-taskbar-host.wh.cpp`, now **v0.4.0** (own
-  version line; v0.4.0 — 2026-09-01 second session, not live-tested — fixes
-  Minimize's dropped-command race with an open-write-READ-close send (D-37),
-  adds the client-state read/poll and the fullscreen-toggle button (D-38),
-  per-monitor instances (D-39), theme-inverted coloring (D-40), and
-  Minimize/Disconnect tooltips): native taskbar-XAML-injected widget in `explorer.exe` on the
-  session host showing WTSClientName + WTSConnectState with a console-gated
-  WTSDisconnectSession button (see D-7/D-8), plus a Minimize button that sends
-  one byte over the `dvc::taskbar::relay` DVC on a detached background thread
-  (see D-12; replaces the former D-9 TODO). **v0.3.0 (D-35)** adds the first of
-  the root `EXPANSION_RESEARCH.md`'s three recommendations — its **#1**: a **Restart
-  Clipboard** button that finds, exact-image-path-verifies, terminates and
-  relaunches this session's `rdpclip.exe` (§4.1), on the same click-time RDP
-  gate and the same D-12 one-shot thread, plus a **"clipboard helper not
-  running"** line built from the same shared find-and-verify function, riding
-  the existing 30 s WTS timer with no new timer and deliberately claiming
-  nothing at all when a helper *is* present (§4.2). Not live-tested. Both
-  compile-checked with the
-  Windhawk clang (`compile-check.ps1`). The full host→client minimize pipe has
-  been **observed working live by the operator**, and **reconfirmed
-  2026-09-01** across multiple further sessions (LOOP-006 resolved
-  2026-08-21). Beyond that pipe, live-test coverage as of 2026-09-01: the host
-  mod's status display, Disconnect button, and minimize-send path are
-  **confirmed**, with console-vs-RDP button gating and whether
-  `WTSRegisterSessionNotification` actually registers still open (LOOP-005
-  narrowed — then widened again by v0.3.0's entirely untested clipboard
-  feature); the client mod's fullscreen-toggle foreground fix is **confirmed**
-  and the quality sink's advise is **confirmed** (its event is not — see
-  above), with the reconnect/watchdog paths and the floating overlay button
-  still untested (LOOP-001/007); the taskbar-embedded panel itself is
-  confirmed rendering with a working command channel, but its status half and
-  four of its five command rows remain unexercised (LOOP-008, "the loop that
-  matters most" — see below).
-- `dvc-plugin/` — throwaway activation **probe** (out-of-process COM
-  LocalServer + server-side trigger, `dvc-plugin/probe/`) — its gating
-  two-machine live test **PASSED** (`dvc-plugin/TESTING.md`, VERIFIED
-  2026-08-21; LOOP-003 resolved) and its registration was removed; kept as
-  historical reference. The **production relay plugin is now built** at
-  `dvc-plugin/relay/` (**v0.2.0**): same verified out-of-process COM
-  LocalServer model, own CLSID/AddIn/channel (D-10), builds clean with
-  `build.ps1`. It forwards a received DVC byte to the client mod's relay
-  window via WM_COPYDATA, and — new in v0.2.0 (D-38, not live-tested) —
-  answers every command with a `RelayStatusReply` built from the client mod's
-  status snapshot, with the 0x03 status query answered locally and never
-  forwarded. End-to-end minimize feature **observed working** (LOOP-006
-  resolved 2026-08-21 — an observation now qualified by D-37's identified
-  delivery race).
+Diagnostics, action feedback and conservative ambiguity refusal are implemented
+with their prerequisite registration and runtime reliability fixes. The current
+design is recorded in D-43 through D-45 in [DECISIONS.md](DECISIONS.md):
 
-- **Taskbar-embedded client widget — consolidated into the client mod (D-26).**
-  Originally built (second 2026-08-21 overnight session) as a third, separate
-  mod `rdp-session-toolkit-taskbar-client-embedded` (`explorer.exe`, D-21),
-  reaching v0.2.0 with a wide always-visible panel (D-25). It is now **folded
-  into the client mod as its `explorer.exe` branch**: the client mod at
-  **v0.6.0** carries two `@include` targets (`mstsc.exe` + `explorer.exe`),
-  `Wh_ModInit` detects the host process and runs the matching branch, the four
-  shared contracts (status struct, command channel, secret location, command
-  bytes) are single definitions used by both, and the explorer branch reads the
-  status file directly via `Wh_GetModStoragePath` — same mod id, same directory,
-  so the former sibling-directory guessing is gone. The standalone
-  `taskbar-integration/client-embedded/` file and folder are **deleted**
-  (never committed; nothing lost). Merged mod compile-checks clean and its
-  settings block validates. **Live-confirmed 2026-09-01** (LOOP-008,
-  narrowed): D-26's merged-mod plumbing works for the command half — the panel
-  renders, shows the migrated status tooltip, and its fullscreen row carries a
-  command end-to-end through the shared-secret channel. **Still open and it is
-  most of the loop:** the status half (nobody has cross-checked the panel's
-  numbers against the mstsc-side snapshot write), the other four command rows
-  (minimize, restore, reconnect, disconnect), D-34's new unconditional 1 s
-  writer, and the presentational details (tooltip lines, setting gates,
-  staleness dimming, button collapse). The status writer (D-22, since extended
-  by D-34), command channel (D-23), and `CitadelRdpTaskbarRelay` (D-24) are
-  unchanged in behavior.
+- Commands use protocol v3 with correlation and target PID/creation identity.
+  Extra mstsc processes, including connection dialogs, and multiple RDP frames
+  pause peer controls. This does not provide multi-session selection.
+- Snapshot v3 uses `local-widget-status-v3.dat`, freshness/identity validation and
+  complete-record replacement. Legacy actions have no unsafe fallback.
+- Feedback distinguishes acceptance, observed state and uncertain outcomes;
+  uncertain actions are not retried. Host-local Clipboard and Disconnect remain
+  independent of relay readiness and retain their RDP-session gates.
+- Host work uses an owned bounded queue. Client workers and taskbar/native
+  callbacks are accounted for during unload. Unresolved callback teardown can
+  retain code until process exit; re-enabling then requires a process restart.
+  Relay lifetime follows COM references, and relay logs are bounded in user
+  storage. These source fixes still require real Windows lifecycle acceptance.
+- Registration separates the quoted COM launch command from its raw executable
+  identity, preserves foreign values and scopes rollback/removal. It is not a
+  complete deployment transaction or crash-recovery installer.
 
-## Active Work
+[Get-ToolkitDiagnostics.ps1](../../scripts/Get-ToolkitDiagnostics.ps1) collects
+read-only local observations and can export to an explicitly selected new file.
+It omits endpoint names by default and does not collect command secrets,
+command lines, connection-file contents or clipboard contents. File/source
+presence does not prove loaded versions or successful taskbar injection.
 
-**Diagnostics and session reliability implementation.** The requested top-three
-additions and their prerequisite fixes are implemented in the current sources.
-See [REFINEMENT_PLAN.md](../../REFINEMENT_PLAN.md) for scope,
-[runtime regression checks](../../probes/runtime/README.md) for local validation,
-and [TOP_THREE_ACCEPTANCE.md](../../TOP_THREE_ACCEPTANCE.md) for the matched
-candidate, compatibility behavior and rollback. Runtime acceptance is tracked
-by LOOP-011; distribution readiness remains under LOOP-010. The dated work log
-records checks and artifacts. The installed runtime was not changed.
-The pre-home-test [implementation review](../../IMPLEMENTATION_REVIEW.md)
-records the follow-up corrections under D-45; use its replacement candidate
-recorded in WORK_LOG.
+The WM_COPYDATA sender-window/image check is advisory identity checking, not
+authentication against hostile same-user code. The existing personal-use trust
+boundary and its limits are described in the
+[implementation review](../../IMPLEMENTATION_REVIEW.md).
 
-**Comparative feature review.** See
-[`BEST_NEXT_ADDITIONS.md`](../../BEST_NEXT_ADDITIONS.md) for the repository-based
-product comparison, utility/fit scores, best next additions, and the disposition
-of existing, deferred, and excluded features. This is a planning report; the
-active implementation sequence remains in `REFINEMENT_PLAN.md`.
+## Published home-test candidate
 
-**First refinement candidate (2026-09-18).** The operator authorized planning
-and the first implementation pass while remote. See
-[`REFINEMENT_PLAN.md`](../../REFINEMENT_PLAN.md) for the staged work and pass-1
-results, and [`HOME_TEST.md`](../../HOME_TEST.md) for home acceptance and rollback.
-Client 0.10.1 and relay 0.2.1 are candidate source/builds; the host is unchanged.
-The earlier verified-runtime versions below and above describe the baseline.
-No live installation was changed; LOOP-010 remains open.
+[Session reliability RC1](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/tag/session-reliability-rc.1)
+is published as a prerelease. The
+[Windows x64 candidate ZIP](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/RDP-Session-Toolkit-session-reliability-rc.1-windows-x64.zip)
+contains the built relay, mod sources, diagnostics, source/build provenance,
+acceptance material and the home update/test/rollback guide. The guide and
+release checksum file are also standalone release assets. The relay is unsigned;
+this is a manual candidate, not an installer or a live-accepted release.
 
-**Toolkit-only packaging research (2026-09-18).** See
-[`PACKAGING_RESEARCH.md`](../../PACKAGING_RESEARCH.md) for the current feasibility
-assessment and [`probes/packaging/`](../../probes/packaging/README.md) for safe
-reproductions. D-42 records the operator's prerequisite-installation boundary;
-LOOP-010 tracks the remaining deployment validation. This research did not
-change production runtime code or perform an installation. The work log records
-the checks completed in this session.
+The release tag identifies the implementation revision; refreshed downloadable
+assets include the later documentation revision and download links. Exact
+revisions, asset hashes, publication details and verification results belong to
+the dated [WORK_LOG.md](WORK_LOG.md) entries and the ZIP's build manifest.
 
-**Repository purpose and expansion review.** See
-[`REPOSITORY_REVIEW.md`](../../REPOSITORY_REVIEW.md) for the proposed mission,
-architecture explanation, source-based findings, and sequenced feature plan.
-Recommendations remain proposals; no feature implementation or mission
-adoption was recorded by this review. The dated work-log entry records scope
-and verification. Earlier session notes below are historical context.
+Start with [HOME_UPDATE_TEST_ROLLBACK.md](../../HOME_UPDATE_TEST_ROLLBACK.md).
+Use [TOP_THREE_ACCEPTANCE.md](../../TOP_THREE_ACCEPTANCE.md) for the extended
+runtime matrix. A local source build is available through
+[build-refinement-candidate.ps1](../../scripts/build-refinement-candidate.ps1).
+Generated binaries and candidate ZIPs remain ignored by Git; download the
+published asset or build locally after pulling.
 
-**Earlier session (2026-09-06) — verification and reconciliation.** Operator
-confirmation closes the live-test work for the current batch. The remaining
-work is release hygiene: commit the current changes (including the retained
-probe source), keep documentation aligned with the verified architecture, and
-address only non-functional open design/maintenance items. The RAIDEN doctor
-was also rerun after relocating the non-schema research and roadmap documents:
-10 OK, 0 WARN, 0 FAIL.
+## Verification and next work
 
-**This session (host mod v0.3.0, D-35).** Built the root
-`EXPANSION_RESEARCH.md`'s #1
-recommendation on the host widget: the rdpclip restart action (§4.1) and the
-report-the-negative-only clipboard presence line (§4.2), as that document
-specified rather than redesigned. Reuses D-8's click-time RDP gate, D-11's
-exact-image-path verification and D-12's detached one-shot with its unload
-drain; one shared find-and-verify function serves both the action and the
-status line; the line rides the existing 30 s WTS timer, so no new timer.
-Compile-checked clean including the real link step. **Nothing about it is
-live-tested** — per §6's sequencing that test is the next thing owed, and it is
-expected to exercise most of LOOP-005 as a side effect.
+The earlier operator-verified baseline is recorded in D-41 and the September 6
+WORK_LOG entry. That report predates the current registration/protocol/lifetime
+candidate. Local regression and compile/link checks, an implementation review,
+and publication/download verification have been recorded for the candidate;
+none establishes its real two-machine or Explorer acceptance. This development
+work has not changed the installed runtime or production registration.
 
-**Preceding session (client mod v0.9.2, D-34), committed.**
-Everything through the client mod's v0.9.0 thumbnail-toolbar removal (D-33)
-and v0.9.1 action-button-tooltip pass is committed. That session landed two
-more things: the **v0.9.2 code fix** — an unconditional 1 s status-write tick
-on the client mod's `LocalWidget` message window (D-34), closing the D-22
-residual gap that D-33's removal made serious (the panel is now the toolkit's
-only full-featured client surface, so it can no longer be allowed to go
-silently blank) — and a **documentation reconciliation pass**: correcting the
-connection-quality claim (D-16/D-29 were written before the sink's advise was
-live-confirmed) across DECISIONS/ROADMAP/CURRENT_STATE, folding the
-2026-09-01 live-test evidence into every open loop's disposition in
-OPEN_LOOPS (some resolved, some narrowed, some still fully open — no longer a
-blanket "pending"), and adding the root `EXPANSION_RESEARCH.md`, a research-only
-assessment (no code changes) of where the toolkit goes next given the
-now-actual architecture. Next natural steps: the live passes OPEN_LOOPS still
-calls for, in the order it lays out — LOOP-008 (the taskbar-embedded panel)
-matters most, since D-33 left it the toolkit's sole full-featured surface and
-most of that loop is still unexercised.
+[OPEN_LOOPS.md](OPEN_LOOPS.md) is authoritative for loop dispositions and
+version-scoped evidence. Use these entries to coordinate the next work:
 
-## Notes
+- **LOOP-011:** perform the home update and runtime acceptance matrix, including
+  controls/feedback, ambiguity and changed identities, mixed versions, clipboard
+  recovery, unload/retained-code restart, foreground input, monitors/DPI/themes
+  and resource measurements.
+- **LOOP-002:** validate conservative target refusal within that candidate pass.
+  A multi-session chooser would require a separate product decision.
+- **LOOP-010:** follow the deployment/installer gates in
+  [REFINEMENT_PLAN.md](../../REFINEMENT_PLAN.md) and
+  [PACKAGING_RESEARCH.md](../../PACKAGING_RESEARCH.md). A toolkit setup must reuse
+  an independently installed Windhawk; D-42 governs that boundary.
 
-- GitHub remote: `git@github.com:StarlightDaemon/RDP-Session-Toolkit.git`
-  (origin). No longer local-only.
+Historical loop narratives are retained in the ledger's linked snapshot. Do not
+reuse old unverified-build text as a current baseline failure or apply the
+earlier operator verification to this newer candidate. Dated test counts and
+doctor results stay in WORK_LOG; no new live test or doctor run is implied here.
+
+## Planning and history
+
+[BEST_NEXT_ADDITIONS.md](../../BEST_NEXT_ADDITIONS.md) records the offering
+comparison and ranked feature proposals; its selected additions are implemented
+in this candidate. Broader proposals in that report and
+[REPOSITORY_REVIEW.md](../../REPOSITORY_REVIEW.md) remain planning material.
+[ROADMAP.md](../../ROADMAP.md) and [REFINEMENT_PLAN.md](../../REFINEMENT_PLAN.md)
+provide the associated sequence. The earlier registration-only HOME_TEST guide
+is historical; use HOME_UPDATE_TEST_ROLLBACK for this prerelease.
+
+Development and earlier live-test history are preserved in Git,
+[DECISIONS.md](DECISIONS.md), [WORK_LOG.md](WORK_LOG.md) and the reconciled loop
+ledger rather than repeated as current build notes here.
