@@ -784,3 +784,28 @@ change, and no `@compilerOptions` change.
   prerelease and previously recorded asset metadata. Only this README and the
   dated review record changed; no runtime source or release asset changed, and
   no runtime tests, installation, registration, live reload or RDP action ran.
+
+## 2026-10-17 — reconcile historical probe documentation
+
+- Reviewed dvc-plugin/probe/README.md and dvc-plugin/TESTING.md against retained
+  probe sources, IDs, build/registration/logging/trigger behavior, historical
+  activation evidence, the reconciled ledger and published RC1 metadata.
+  Preserved the August 21 verification, original command/log/payload examples
+  and probe-only evidence boundary; no new live verification was inferred.
+- Marked the experiment and procedure as archival, linked current RC1 ZIP,
+  standalone guide/checksums and acceptance guidance, and removed stale claims
+  that the production relay/mod paths are unbuilt. Corrected the blanket
+  C++/WinRT availability claim and scoped the recorded compiler version to the
+  original build. Historical probe identifiers remain distinct from production.
+- Documented the old probe helper's recursive cleanup attempts in both HKCU
+  and HKLM, lack of ownership checks and partial-cleanup success result. Kept
+  replay separate from current rollback. Clarified that the trigger's printed
+  session value is the active console session ID, and made missing-log/error-31
+  troubleshooting diagnostic leads rather than proof of a unique cause.
+- Verified all nine original fenced examples are unchanged, six PowerShell
+  blocks parse without execution, 16 local links/anchors resolve, four release
+  URLs match the published assets/page, and probe IDs/evidence match source and
+  prior text. `git diff --check` passed. GitHub still reports the published,
+  non-draft RC1 prerelease with the recorded asset metadata. Only the two
+  requested documents and this review record changed; no source or release
+  asset changes, runtime tests, probe registration/cleanup or live RDP actions.

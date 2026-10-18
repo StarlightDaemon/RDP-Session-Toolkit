@@ -1,4 +1,4 @@
-# DVC probe — testing the activation mechanism
+# DVC probe — historical activation test
 
 > **Status: VERIFIED (2026-08-21).** The procedure below was run end-to-end and
 > produced a clean success — `IWTSPlugin::Initialize`, `CreateListener`, and all
@@ -6,10 +6,39 @@
 > client. The mechanism this probe exists to test is confirmed working; see
 > "What this proves" at the bottom. The probe registration was unregistered
 > afterward (it's a throwaway test artifact, not the real relay plugin — see
-> that section for what still isn't built).
+> that section for the limits of this evidence).
 
-This document is the operator procedure for the **one unproven mechanism** in the
-whole taskbar-integration plan:
+## Current toolkit testing
+
+Use [Session reliability RC1](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/tag/session-reliability-rc.1)
+and the [Windows x64 candidate ZIP](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/RDP-Session-Toolkit-session-reliability-rc.1-windows-x64.zip)
+for current deployment. The ZIP includes the built relay, mod sources and the
+[home update, test and rollback guide](../HOME_UPDATE_TEST_ROLLBACK.md); no relay
+rebuild is needed. The release also provides the
+[standalone guide](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/HOME_UPDATE_TEST_ROLLBACK.md)
+and [asset checksums](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/SHA256SUMS.txt).
+Use [TOP_THREE_ACCEPTANCE.md](../TOP_THREE_ACCEPTANCE.md) for the current runtime
+matrix. The manual, unsigned prerelease still requires its own home acceptance;
+neither this probe result nor the later baseline report in
+[D-41](../.raiden/state/DECISIONS.md#d-41-operator-verification-closes-the-current-live-test-batch)
+accepts RC1. Release/asset provenance is recorded through the manifest and
+[work log](../.raiden/state/WORK_LOG.md).
+
+The [production relay](relay/README.md) and both mods are implemented. Do not
+register the retired probe or run its trigger for a normal toolkit update/test.
+Formal evidence and follow-up work are in LOOP-003, LOOP-011 and LOOP-002 in
+[OPEN_LOOPS.md](../.raiden/state/OPEN_LOOPS.md).
+
+## Historical question and procedure
+
+The remaining sections preserve the original experiment and its examples. They
+are archival instructions for a deliberate replay in a disposable test
+environment, not the current toolkit installation or rollback procedure. The
+probe uses its original unscoped registry helper and executable-adjacent log;
+the cleanup caveats below matter if replaying it. No probe registration, live
+test or cleanup was performed for this documentation review.
+
+The experiment addressed this then-unproven mechanism:
 
 > Does an out-of-process plugin, registered under the RDP client's `AddIns` key
 > in the `{CLSID}` / `LocalServer32` (out-of-process) form, actually get
@@ -17,9 +46,9 @@ whole taskbar-integration plan:
 > Channel signal** sent from inside the RDP session?
 
 Everything here lives in [`probe/`](probe/). It is a throwaway proof, not the
-real relay plugin. It sends a trivial payload and, on receipt, writes one
-timestamped line to a log file. Nothing more. If that line appears, the pipe is
-real and the rest of the plan can be built on it.
+production relay plugin. It sends a trivial payload and logs its receipt.
+The recorded result established activation and byte delivery for that probe;
+it did not establish production control or lifecycle behavior.
 
 The probe was adapted from Microsoft's official reference,
 [`microsoft/rdp-dvc-plugin-samples`](https://github.com/microsoft/rdp-dvc-plugin-samples)
@@ -39,15 +68,17 @@ The probe was adapted from Microsoft's official reference,
   required. See "Build" below. (This was already confirmed to compile and link
   cleanly with that toolchain.)
 
-No administrator rights are needed anywhere in this procedure. Registration is
-**per-user (HKCU)** only. (Verified: `/register` succeeds from a non-elevated
-prompt and writes only under `HKEY_CURRENT_USER`.)
+The recorded test used **per-user HKCU registration from a non-elevated prompt**.
+The retained probe also supports machine registration, and its cleanup attempts
+both hives regardless of registration scope. Do not infer a general no-admin
+or safe-removal guarantee from the original HKCU success.
 
 ---
 
 ## Build
 
-On each machine (or build once and copy the matching-arch `bin\` across):
+For an intentional historical replay, build once and copy the matching-arch
+files, or build on each test machine. Start at the repository root:
 
 ```powershell
 cd dvc-plugin\probe
@@ -56,7 +87,7 @@ cd dvc-plugin\probe
 
 Outputs:
 
-- `bin\dvc-probe-plugin.exe`  — the CLIENT-side plugin (also self-registers)
+- `bin\dvc-probe-plugin.exe`  — the CLIENT-side plugin (supports explicit `/register`)
 - `bin\dvc-probe-trigger.exe` — the REMOTE-side trigger
 
 The build uses `-static`, so each EXE is standalone — it does **not** depend on
@@ -100,7 +131,9 @@ out-of-process launch is the specific thing this test proves.
 
 > **Do not** keep the plugin EXE open/registered from a temp folder you will
 > delete — the `LocalServer32` value is the absolute path recorded at
-> registration time. If you move the EXE, re-run `/register`.
+> registration time. The old probe overwrites its registration on `/register`;
+> it lacks the production relay's ownership/rollback checks. Keep the replay's
+> test path stable. Use the current home guide for production path handling.
 
 ---
 
@@ -127,7 +160,7 @@ RDP window), run:
 .\dvc-probe-trigger.exe
 ```
 
-Expected output on success:
+Expected output on success (example, not a newly captured run):
 
 ```
 [trigger] pid=... session=...
@@ -142,6 +175,11 @@ Expected output on success:
 
 `/once` sends a single payload instead of three.
 
+The old trigger's printed `session=...` value comes from
+WTSGetActiveConsoleSessionId, not the trigger process's session. It is not proof
+that the shell is inside RDP. The channel open itself uses WTS_CURRENT_SESSION;
+run the trigger in the intended remote session as specified above.
+
 ---
 
 ## Step 4 — Check the result (CLIENT)
@@ -155,7 +193,8 @@ Get-Content .\bin\dvc-probe.log
 ### ✅ SUCCESS looks like this
 
 A `dvc-probe.log` file exists and contains the activation sequence **and** the
-data-arrival lines, e.g.:
+data-arrival lines. This retained example illustrates the format; its timestamps
+are not the date of the August 21 verification:
 
 ```
 2026-08-20 14:20:47.392  pid=9776  plugin instance constructed (this=0x...)
@@ -174,13 +213,16 @@ You can also watch these lines live (without opening the file) using
 [DebugView](https://learn.microsoft.com/sysinternals/downloads/debugview) on the
 client — every log line is also emitted via `OutputDebugString`.
 
-### ❌ FAILURE modes and what they mean
+### ❌ Probe troubleshooting observations
+
+These are diagnostic leads, not proof of a single cause. In particular, no file
+can also mean that the executable-adjacent log could not be written.
 
 | Symptom | Meaning | Where to look |
 |---|---|---|
-| Trigger prints `WTSVirtualChannelOpenEx FAILED, GetLastError=31` | You are **not inside an RDP session** (running on the local console), *or* the client plugin never started listening. `31` is the normal error when there is no DVC infrastructure — e.g. running the trigger on a plain desktop. | Confirm the shell is really inside the `mstsc` window; confirm Steps 1–2. |
-| No `dvc-probe.log` at all, trigger says it sent OK | `mstsc` never activated the plugin — it never called `CreateListener`, so the remote's open request had nothing to connect to. | The plugin was not registered, was registered from a different user, the EXE path is wrong/moved, or `mstsc` was already running before registration. Re-run `/register`; restart `mstsc`. |
-| Log has `Initialize`/`CreateListener` lines but **no** `OnNewChannelConnection` / `SIGNAL RECEIVED` | The plugin activated but the signal never crossed. Channel-name mismatch, or the trigger ran in a different session than the one `mstsc` connected. | Confirm both sides use `dvc::taskbar::probe` (they share `probe/common/ProbeIds.h`). Confirm the trigger runs in the RDP session, not a second local login. |
+| Trigger prints `WTSVirtualChannelOpenEx FAILED, GetLastError=31` | Channel open failed. The historical console check observed this error; it alone does not identify a cause. | Confirm the intended RDP session, registration and listener activation in the disposable replay environment. |
+| No `dvc-probe.log` at all, trigger says it sent OK | Activation or logging may have failed; the missing file alone cannot distinguish them. | Inspect the probe registration/user/path, executable-directory write access and OutputDebugString output before changing registration or restarting the test client. |
+| Log has `Initialize`/`CreateListener` lines but **no** `OnNewChannelConnection` / `SIGNAL RECEIVED` | Listener activation was logged, but arrival was not. Possible causes include a channel/session mismatch or subsequent logging failure. | Confirm both sides use `dvc::taskbar::probe`, that the trigger runs in the intended RDP session, and that logging remains writable. |
 | `Get-ItemProperty` in Step 1 shows nothing | Registration did not happen or wrote to a different hive. | Re-run `/register` (no `/machine`); confirm you read `HKCU`. |
 
 The `dvc-probe.log` timestamps come from the **client's** local clock. The
@@ -197,9 +239,19 @@ On the client:
 .\bin\dvc-probe-plugin.exe /unregister
 ```
 
-This removes the `AddIns` and `CLSID` keys from both `HKCU` and `HKLM` (the
-`HKLM` deletes are no-ops unless you used `/machine`). Verified idempotent. You
-can also delete `bin\dvc-probe.log`.
+This is the **old probe cleanup**, retained for the historical replay. Its helper
+attempts recursive deletion of the probe's AddIns and CLSID trees in **both HKCU
+and HKLM**, without ownership checks. HKLM attempts are not conditional on having
+used `/machine`; access can fail or pre-existing probe-key data can be removed.
+Its boolean result can report success when only one hive's cleanup succeeded.
+Inspect/back up those exact probe keys before deliberate reuse and verify both
+hives afterward rather than treating the exit status as proof of complete cleanup.
+The recorded test's probe registration was removed; this review did not repeat it.
+The test log can be removed after preserving any evidence needed.
+
+Do not use this command for current relay removal/rollback; follow
+[HOME_UPDATE_TEST_ROLLBACK.md](../HOME_UPDATE_TEST_ROLLBACK.md). The production
+relay has different identifiers and scoped value removal.
 
 ---
 
@@ -217,9 +269,13 @@ can also delete `bin\dvc-probe.log`.
 
 **Does NOT cover (deliberately out of scope for this probe):**
 
-- Relaying the signal onward to the client-side Windhawk mod via a window
-  message — not built yet.
+- Relaying the signal onward to a Windhawk mod via a window message. That path
+  is now implemented in the separate production components; this probe never
+  exercised it.
 - Any real payload / protocol / framing — the payload here is a throwaway
   ASCII string.
-- Integrating the send side into the remote-side Windhawk mod — the trigger is
-  a standalone EXE for now.
+- Integrating the send side into the remote-side Windhawk mod. This probe keeps
+  its standalone trigger; the production host mod implements its own sender.
+- Production protocol v3, bound targeting, explicit feedback, registration
+  rollback, COM reference-based shutdown, taskbar behavior or current candidate
+  compatibility/security. Use the current acceptance matrix for those gates.
