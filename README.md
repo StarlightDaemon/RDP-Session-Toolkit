@@ -1,5 +1,11 @@
 # RDP Session Toolkit
 
+**Home-test download:** [Windows x64 candidate ZIP](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/RDP-Session-Toolkit-session-reliability-rc.1-windows-x64.zip).
+The ZIP includes the built relay, mod sources, and update/test/rollback guide;
+no relay rebuild is needed. See the
+[RC1 prerelease page](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/tag/session-reliability-rc.1)
+for release notes, the standalone guide, and checksums.
+
 **Diagnostics and session reliability candidate:** client 0.11.1, host 0.5.1
 and relay 0.3.1 add local diagnostics, action feedback and a conservative
 multiple-client guard, with owned workers, bounded relay logs and safer unload.

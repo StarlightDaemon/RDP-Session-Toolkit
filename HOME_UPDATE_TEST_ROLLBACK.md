@@ -5,6 +5,12 @@ host 0.5.1, relay 0.3.1**. All three use protocol v3. This is a manual test
 bundle, not an installer; its relay is unsigned. Windhawk is installed and
 updated separately.
 
+Download the ready-to-test
+[Windows x64 candidate ZIP](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/RDP-Session-Toolkit-session-reliability-rc.1-windows-x64.zip);
+no relay rebuild is needed. The
+[RC1 prerelease page](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/tag/session-reliability-rc.1)
+also provides release notes, this guide as a separate download, and checksums.
+
 | Machine | Role | Components to update |
 |---|---|---|
 | Client | The PC where you launch Remote Desktop (`mstsc.exe`) | Client mod and relay |
@@ -24,9 +30,9 @@ an earlier registration-only candidate.
 1. Save your work. Have physical access to both PCs for this first update.
 2. Before changing anything, confirm ordinary RDP, clipboard sharing and your
    current toolkit controls work. Record any existing failures.
-3. Copy and extract the candidate ZIP on both PCs. Use the ZIP identified by the
-   latest repository WORK_LOG entry, or build a fresh copy from the reviewed
-   source as described below; older candidate ZIPs are retained.
+3. Download the candidate ZIP linked above, then copy and extract it on both
+   PCs. Building from the reviewed source is an optional alternative described
+   below; older local candidate ZIPs are retained.
 4. In PowerShell, set `$bundle` to the extracted folder containing `mods`,
    `relay`, `scripts`, and `SHA256SUMS.txt`. The path below is an example:
 
