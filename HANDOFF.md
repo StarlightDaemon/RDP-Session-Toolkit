@@ -1,4 +1,11 @@
 # Project Handoff — RDP Session Toolkit
+
+> Historical brainstorming handoff from before the production components were
+> built. Use [README.md](README.md) for usage and
+> [REPOSITORY_REVIEW.md](REPOSITORY_REVIEW.md) for the repository explanation
+> and proposed expansion plan. The implementation-status claims below are
+> preserved as historical context, not current instructions.
+
 ## Briefing for a brainstorming & actuation partner
 
 > **Who you are (the agent reading this):** a thinking partner in a plain chat —

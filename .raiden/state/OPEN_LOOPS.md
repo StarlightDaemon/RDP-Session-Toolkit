@@ -1,5 +1,41 @@
 # Open Loops
 
+- **LOOP-011 — Diagnostics and session reliability candidate acceptance — OPEN
+  2026-10-16.** The operator authorized the top-three additions from
+  `BEST_NEXT_ADDITIONS.md`, including prerequisite lifetime, logging and stale
+  state fixes. Source implementation and isolated regression checks are
+  complete; real Explorer/RDP acceptance remains. Follow
+  [TOP_THREE_ACCEPTANCE.md](../../TOP_THREE_ACCEPTANCE.md): matched component
+  controls, feedback and expiry, two mstsc instances including an unconnected
+  dialog, changed/old identities, mixed versions without action fallback,
+  relay disappearance, COM process exit, clipboard recovery and unload during
+  work. Verify normal dispatcher cleanup plus the inert-module retention
+  fallback for hung/disconnected UI; measure actual resource use and check
+  multiple monitors, DPI and themes. No production install, registry mutation,
+  live mod reload or two-endpoint verification occurred in this pass.
+  The pre-home-test review corrections are described in
+  [IMPLEMENTATION_REVIEW.md](../../IMPLEMENTATION_REVIEW.md) under D-45. Include
+  multiple frames within one process, foreign-frame refusal, uncertain shortcut
+  and clipboard outcomes, and restart after retained-code unload in acceptance.
+
+- **LOOP-010 — Toolkit packaging readiness — OPEN 2026-09-18.**
+  **Session-reliability follow-up:** the runtime/session source changes from
+  refinement passes 2 and 3 are implemented; see LOOP-011 for their acceptance.
+  The installer transaction and disposable-machine deployment gates remain.
+  **Pass-1 update:** registration/path/scope refinements are implemented and
+  locally regression-checked; see [REFINEMENT_PLAN.md](../../REFINEMENT_PLAN.md).
+  Home acceptance is pending. Runtime lifetime and full installer transaction
+  work remain separate later passes. The original scope below still applies.
+  [PACKAGING_RESEARCH.md](../../PACKAGING_RESEARCH.md) is the home for the
+  deployment findings and acceptance matrix. Complete registration/ownership
+  and lifetime repairs, validate an exact Windhawk CLI version in a disposable
+  Windows environment, and exercise install/upgrade/repair/rollback/uninstall
+  before a release claim. Then verify the two-endpoint RDP path, mixed versions,
+  multiple sessions, and unload during work. The non-invasive probes and fresh
+  builds are complete; no new installation or live RDP verification occurred.
+  D-42 governs the prerequisite boundary. Earlier runtime verification does not
+  close this new packaging loop.
+
 - **LOOP-001 — Client-mod live test — RESOLVED 2026-09-06
   (operator-reported):** the ported `rdp-session-toolkit-taskbar-client.wh.cpp` v0.2.1
   compiles cleanly but has not been loaded under Windhawk. V1's last actual
@@ -34,6 +70,11 @@
   specific instance. Not a problem for the current single-signal design (each
   client's own relay plugin forwards within that client), but any future
   multi-session protocol will need instance targeting.
+  **2026-10-16 source update:** candidate commands bind PID plus creation time
+  and reject multiple mstsc processes rather than selecting an instance. This
+  implements the ambiguity guard, not a session chooser. Live validation of
+  the guard remains under LOOP-011; the older path guard is not strong
+  isolation against hostile same-user processes.
 - **LOOP-003 — DVC probe two-machine live test — RESOLVED 2026-08-21.** The
   gating hardware test passed: `dvc-plugin/TESTING.md` is marked **VERIFIED
   (2026-08-21)** — `IWTSPlugin::Initialize`, `CreateListener`, and the
@@ -46,8 +87,10 @@
   but LOOP-001 here tracks the client-mod Windhawk live-test (never run — see
   below); the hardware/pipe test that actually passed is this loop, LOOP-003,
   which is the one resolved. See LOOP-006 for the still-untested full feature.
-- **LOOP-004 — Debug self-test path uses an untimed SendMessageW (low
-  priority, cosmetic):** `SendRelayTestMinimize` sends its WM_COPYDATA via a
+- **LOOP-004 — Debug self-test path uses an untimed SendMessageW — RESOLVED
+  2026-10-16 (source and compile/link check).** `SendRelayTestMinimize` now uses
+  a bound request and a timed send; runtime acceptance is included in LOOP-011.
+  Historical finding (low priority, cosmetic): `SendRelayTestMinimize` sent its WM_COPYDATA via a
   plain, untimed `SendMessageW`, unlike `Wh_ModUninit`'s frame-thread teardown
   send, which uses `SendMessageTimeoutW`. (That send was the thumb-bar teardown
   message until v0.9.0; it is now `g_msgSinkTeardown`, carrying the event

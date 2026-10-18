@@ -2,7 +2,7 @@
 // @id              rdp-session-toolkit-taskbar-host
 // @name            RDP Session Toolkit — Taskbar Host
 // @description     Host-side taskbar integration for RDP Session Toolkit. Injects a native XAML widget into the Windows 11 taskbar of the RDP session host showing the connecting client's name and the session's connection state, with disconnect, minimize, fullscreen-toggle and restart-clipboard buttons. Minimize and the fullscreen toggle signal the client over an RDP Dynamic Virtual Channel, which also carries the client's fullscreen state back so the toggle labels its real direction. Restart clipboard kills and relaunches the session's own rdpclip.exe to repair broken copy-and-paste.
-// @version         0.4.0
+// @version         0.5.1
 // @author          StarlightDaemon
 // @github          https://github.com/StarlightDaemon
 // @include         explorer.exe
@@ -22,6 +22,12 @@
 // ==WindhawkModReadme==
 /*
 # RDP Session Toolkit — Taskbar Host
+
+**Reliability candidate:** relay controls require matching client 0.11.1 and
+relay 0.3.1. Missing, ambiguous or incompatible peers disable only those controls.
+The status line and tooltip report action results. Local Disconnect and Restart
+Clipboard remain available without a relay. Host jobs and taskbar callbacks are
+owned through unload; failed status polls repaint the unavailable state.
 
 The host-side (`explorer.exe`) taskbar-integration component of the
 **RDP Session Toolkit**. Runs on the machine being connected *to* — the RDP
@@ -58,17 +64,17 @@ the lock screen.
 ## Minimize the client
 
 The widget's minimize button does not act locally. It opens the toolkit's
-RDP Dynamic Virtual Channel (`dvc::taskbar::relay`), writes a single
-command byte, which the client-side DVC relay plugin forwards to the
+RDP Dynamic Virtual Channel (`dvc::taskbar::relay`), writes a versioned,
+correlated request bound to the client process lifetime, which the client-side DVC relay plugin forwards to the
 client mod's relay receiver — minimizing the remote `mstsc` window on your
 local machine — and then **reads the relay's small status reply back before
 closing**. The reply doubles as delivery confirmation: the original
 write-then-immediately-close shape could tear the channel down before the
 queued byte reached the client, which is why the button used to drop clicks.
-The open-write-read-close runs on a short-lived background thread so the
-taskbar's UI thread never blocks on channel latency; if no relay is listening
-(the channel fails to open) it is logged and silently dropped, with no dialog
-or other interruption to `explorer.exe`.
+The open-write-read-close runs on the owned, bounded host worker so the
+taskbar's UI thread never blocks on channel latency. Missing/incompatible peers
+and uncertain results appear in the status line and tooltip; uncertain actions
+are never retried automatically.
 
 Like Disconnect, the button is enabled only over RDP (a minimize signal is
 meaningless on the physical console).
@@ -157,6 +163,7 @@ end-to-end feature (a host minimize click actually minimizing the client's
 
 #include <windows.h>
 #include <wtsapi32.h>
+#include <pchannel.h>
 
 // winbase.h defines GetCurrentTime() as a macro wrapping GetTickCount().
 // winrt XAML headers declare a virtual GetCurrentTime(int64_t*) method.
@@ -204,7 +211,392 @@ using namespace Windows::UI::Xaml::Media;
         Wh_Log(L"[" ctx L"] unknown exception");                               \
     }
 
+// BEGIN TOOLKIT RUNTIME CONTRACT
+// Mirrored verbatim into the standalone Windhawk sources. The runtime tests
+// enforce equality; users can still install either mod by pasting one file.
+#include <windows.h>
+#include <tlhelp32.h>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <thread>
+
+namespace rdpstk {
+enum class Result : DWORD {
+    Unknown, Accepted, Observed, NoReceiver, Ambiguous, TargetChanged,
+    Unavailable, Rejected, TimedOut, Unsupported, Busy
+};
+inline PCWSTR ResultText(Result r) {
+    switch (r) {
+    case Result::Accepted: return L"Accepted; awaiting state";
+    case Result::Observed: return L"Requested window state observed";
+    case Result::NoReceiver: return L"Client mod unavailable";
+    case Result::Ambiguous: return L"Multiple Remote Desktop clients; controls paused";
+    case Result::TargetChanged: return L"Client changed; refresh before trying again";
+    case Result::Unavailable: return L"Client state unavailable";
+    case Result::Rejected: return L"Command rejected";
+    case Result::TimedOut: return L"Timed out; outcome unknown";
+    case Result::Unsupported: return L"Component upgrade required";
+    case Result::Busy: return L"Another action is in progress";
+    default: return L"Outcome unknown";
+    }
+}
+inline bool ValidResult(DWORD value) { return value <= (DWORD)Result::Busy; }
+inline Result CommandReply(DWORD_PTR value) {
+    // Zero can mean an uncertain action or an unhandled message; neither is
+    // proof of rejection. Preserve uncertainty without ever claiming success.
+    return value <= (DWORD)Result::Busy ? (Result)value : Result::Unsupported;
+}
+inline ULONGLONG FileTimeValue(FILETIME t) {
+    return ((ULONGLONG)t.dwHighDateTime << 32) | t.dwLowDateTime;
+}
+inline bool ProcessBirth(DWORD pid, ULONGLONG* birth) {
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+    if (!p) return false;
+    FILETIME created{}, exit{}, kernel{}, user{};
+    bool ok = WaitForSingleObject(p, 0) == WAIT_TIMEOUT &&
+              GetProcessTimes(p, &created, &exit, &kernel, &user);
+    if (ok) *birth = FileTimeValue(created);
+    CloseHandle(p);
+    return ok;
+}
+struct Target {
+    Result result = Result::Unavailable;
+    HWND window = nullptr;
+    DWORD pid = 0;
+    ULONGLONG birth = 0;
+};
+struct FrameScan { bool complete = false; unsigned count = 0; HWND window = nullptr; };
+inline FrameScan ScanFrames(DWORD targetPid) {
+    struct Context { DWORD pid; FrameScan frames; } context{targetPid, {}};
+    context.frames.complete = EnumWindows([](HWND window, LPARAM data) -> BOOL {
+        auto& context = *reinterpret_cast<Context*>(data);
+        DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
+        if (pid == context.pid) {
+            wchar_t cls[64]{};
+            if (!GetClassNameW(window, cls, ARRAYSIZE(cls))) return FALSE;
+            if (_wcsicmp(cls, L"TscShellContainerClass") == 0) {
+                ++context.frames.count; context.frames.window = window;
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&context)) != FALSE;
+    return context.frames;
+}
+// Count every mstsc in this Windows session, including unmodified connection
+// dialogs. This intentionally favors a conservative refusal over guessing.
+// processName is injectable only for isolated fixture-process tests.
+inline Target FindTarget(PCWSTR windowClass, DWORD expectedPid = 0,
+                         ULONGLONG expectedBirth = 0,
+                         PCWSTR processName = L"mstsc.exe") {
+    Target t;
+    DWORD session = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &session)) return t;
+    HANDLE scan = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (scan == INVALID_HANDLE_VALUE) return t;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    BOOL more = Process32FirstW(scan, &entry);
+    unsigned count = 0;
+    bool uncertain = !more;
+    while (more) {
+        if (_wcsicmp(entry.szExeFile, processName) == 0) {
+            DWORD candidateSession = 0;
+            if (!ProcessIdToSessionId(entry.th32ProcessID, &candidateSession)) uncertain = true;
+            else if (candidateSession == session) { ++count; t.pid = entry.th32ProcessID; }
+        }
+        more = Process32NextW(scan, &entry);
+    }
+    if (GetLastError() != ERROR_NO_MORE_FILES) uncertain = true;
+    CloseHandle(scan);
+    if (count > 1) { t.result = Result::Ambiguous; return t; }
+    if (uncertain) return t;
+    if (!count) { t.result = Result::NoReceiver; return t; }
+    if (!ProcessBirth(t.pid, &t.birth)) return t;
+    if ((expectedPid && expectedPid != t.pid) ||
+        (expectedBirth && expectedBirth != t.birth)) {
+        t.result = Result::TargetChanged;
+        return t;
+    }
+    // PID uniqueness alone does not identify a frame when a client hosts more
+    // than one top-level RDP window. Do not let cached frame selection guess.
+    auto frames = ScanFrames(t.pid);
+    if (!frames.complete) return t;
+    if (frames.count > 1) { t.result = Result::Ambiguous; return t; }
+    unsigned receivers = 0;
+    HWND w = nullptr;
+    while ((w = FindWindowExW(HWND_MESSAGE, w, windowClass, nullptr))) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(w, &pid);
+        // Any extra receiver on this desktop is ambiguous, even a foreign one.
+        if (++receivers > 1 || pid != t.pid) { t.result = Result::Ambiguous; return t; }
+        t.window = w;
+    }
+    t.result = t.window ? Result::Observed : Result::NoReceiver;
+    return t;
+}
+inline bool Fresh(ULONGLONG tick, ULONGLONG now, ULONGLONG limit = 4000) {
+    return tick <= now && now - tick <= limit;
+}
+
+constexpr DWORD kBoundMagic = 0x33435452; // 'RTC3'; low byte is never a legacy command
+constexpr DWORD kProtocol = 3;
+constexpr DWORD kCapabilities = 3; // bound targets + explicit results
+constexpr BYTE kRequestMarker = 0x7F; // old relays forward an unknown, harmless command
+constexpr DWORD kReplyMagic = 0x33525352; // distinct from the v1 status reply
+#pragma pack(push, 1)
+struct BoundCommand {
+    DWORD magic = kBoundMagic;
+    DWORD version = kProtocol;
+    DWORD targetPid = 0;
+    ULONGLONG targetBirth = 0;
+    ULONGLONG requestId = 0;
+    BYTE command = 0;
+};
+struct Request {
+    BYTE marker = kRequestMarker;
+    BYTE command = 0;
+    WORD size = sizeof(Request);
+    DWORD magic = kBoundMagic;
+    DWORD version = kProtocol;
+    ULONGLONG requestId = 0;
+    DWORD targetPid = 0;
+    ULONGLONG targetBirth = 0;
+};
+struct Reply {
+    DWORD magic = kReplyMagic;
+    DWORD version = kProtocol;
+    ULONGLONG requestId = 0;
+    DWORD capabilities = kCapabilities;
+    DWORD result = (DWORD)Result::Unknown;
+    DWORD targetPid = 0;
+    ULONGLONG targetBirth = 0;
+    ULONGLONG snapshotTick = 0;
+    BYTE command = 0;
+    BYTE known = 0;
+    BYTE active = 0;
+    BYTE fullscreen = 0;
+    BYTE iconic = 0;
+};
+#pragma pack(pop)
+static_assert(sizeof(Request) == 32 && sizeof(BoundCommand) == 29 && sizeof(Reply) == 49,
+              "Wire contract drift");
+inline bool ValidRequest(const Request& r) {
+    return r.marker == kRequestMarker && r.size == sizeof(r) &&
+           r.magic == kBoundMagic && r.version == kProtocol && r.requestId &&
+           r.command >= 1 && r.command <= 3 &&
+           (r.command == 3 || (r.targetPid && r.targetBirth));
+}
+inline bool ValidReply(const Reply& r, const Request& q) {
+    return r.magic == kReplyMagic && r.version == kProtocol &&
+           (r.capabilities & kCapabilities) == kCapabilities &&
+           r.requestId == q.requestId && r.command == q.command &&
+           ValidResult(r.result) && r.known <= 1 && r.active <= 1 &&
+           r.fullscreen <= 1 && r.iconic <= 1 &&
+           (r.known || (!r.active && !r.fullscreen && !r.iconic)) &&
+           (!r.known || r.result == (DWORD)Result::Observed || r.result == (DWORD)Result::Accepted) &&
+           (!r.known || (r.targetPid && r.targetBirth && r.snapshotTick)) &&
+           ((r.result != (DWORD)Result::Accepted && r.result != (DWORD)Result::Observed) ||
+            (r.known && (q.command == 3 || r.active))) &&
+           (q.command == 3 || !r.known ||
+            (r.targetPid == q.targetPid && r.targetBirth == q.targetBirth));
+}
+inline bool ParseReply(const BYTE* bytes, DWORD length, const Request& request, Reply* out) {
+    if (!bytes || !out) return false;
+    for (DWORD offset : {0ul, 8ul}) {
+        if (length != offset + sizeof(Reply)) continue;
+        if (offset) {
+            DWORD size = 0, flags = 0;
+            memcpy(&size, bytes, sizeof(size)); memcpy(&flags, bytes + 4, sizeof(flags));
+            // A v3 reply fits in a single DVC chunk. Ignore unrelated flag bits,
+            // but require both FIRST and LAST and the exact declared length.
+            if (size != sizeof(Reply) || (flags & 3) != 3) continue;
+        }
+        Reply reply;
+        memcpy(&reply, bytes + offset, sizeof(reply));
+        if (ValidReply(reply, request)) { *out = reply; return true; }
+    }
+    return false;
+}
+// command uses the local control numbering (1 minimize, 2 restore, 3 fullscreen).
+// The caller must establish identity and sample ordering before using this test.
+inline bool WindowOutcome(BYTE command, bool wasFullscreen, bool fullscreen, bool iconic) {
+    return (command == 1 && iconic) || (command == 2 && !iconic) ||
+           (command == 3 && fullscreen != wasFullscreen);
+}
+template<class Snapshot> inline bool ValidSnapshotState(const Snapshot& s) {
+    auto boolean = [](BOOL value) { return value == FALSE || value == TRUE; };
+    return s.writerPid && s.writerBirth && s.writeTick && boolean(s.sessionActive) &&
+        boolean(s.qualityAvailable) && boolean(s.hung) && boolean(s.iconic) && boolean(s.fullscreen) &&
+        (s.sessionActive || (!s.iconic && !s.fullscreen));
+}
+inline bool PublishRecord(PCWSTR path, const void* data, DWORD size) {
+    try {
+        static std::atomic<ULONGLONG> sequence{0};
+        std::wstring temporary = std::wstring(path) + L"." + std::to_wstring(GetCurrentProcessId()) +
+            L"." + std::to_wstring(GetCurrentThreadId()) + L"." +
+            std::to_wstring(sequence.fetch_add(1) + 1) + L".tmp";
+        HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        DWORD written = 0;
+        BOOL ok = WriteFile(file, data, size, &written, nullptr);
+        CloseHandle(file);
+        // Publish a closed, complete record on the same volume. Readers allow
+        // FILE_SHARE_DELETE and therefore keep an immutable old or new handle.
+        if (ok && written == size && MoveFileExW(temporary.c_str(), path, MOVEFILE_REPLACE_EXISTING)) return true;
+        DeleteFileW(temporary.c_str());
+    } catch (...) {}
+    return false;
+}
+
+// One owned worker and a bounded queue. Stop rejects future jobs, discards
+// queued jobs and joins the active job before DLL unload. No detached work.
+class WorkQueue {
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<std::function<void()>> jobs_;
+    std::thread thread_;
+    bool stopping_ = true;
+public:
+    bool Start() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (thread_.joinable()) return false;
+        stopping_ = false;
+        try {
+            thread_ = std::thread([this] {
+                for (;;) {
+                    std::function<void()> job;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex_);
+                        wake_.wait(lock, [this] { return stopping_ || !jobs_.empty(); });
+                        if (stopping_) return;
+                        job = std::move(jobs_.front()); jobs_.pop_front();
+                    }
+                    try { job(); } catch (...) { /* job-specific feedback belongs to its caller */ }
+                }
+            });
+        } catch (...) { stopping_ = true; return false; }
+        return true;
+    }
+    bool Post(std::function<void()> job) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_ || jobs_.size() >= 4) return false;
+        try { jobs_.push_back(std::move(job)); } catch (...) { return false; }
+        wake_.notify_one(); return true;
+    }
+    void Stop() {
+        { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; jobs_.clear(); }
+        wake_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+    ~WorkQueue() { Stop(); }
+};
+} // namespace rdpstk
+// END TOOLKIT RUNTIME CONTRACT
+
+// BEGIN TRACKED TASKBAR DISPATCH
+// Own every queued delegate until completion. A timeout is not proof that a
+// callback has stopped using this DLL. Windhawk unload runs off the XAML thread.
+class TrackedDispatch {
+    std::mutex mutex_;
+    std::atomic<bool> stopping_{false};
+    struct Entry {
+        winrt::Windows::Foundation::IAsyncAction action{nullptr};
+        winrt::Windows::UI::Core::CoreDispatcher dispatcher{nullptr};
+    };
+    std::vector<Entry> actions_;
+    void Queue(winrt::Windows::UI::Xaml::FrameworkElement const& element,
+               winrt::Windows::UI::Core::CoreDispatcherPriority priority,
+               winrt::Windows::UI::Core::DispatchedHandler const& callback, bool cleanup) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_ && !cleanup) return;
+        actions_.erase(std::remove_if(actions_.begin(), actions_.end(), [](auto const& action) {
+            return action.action.Status() != winrt::Windows::Foundation::AsyncStatus::Started;
+        }), actions_.end());
+        // Bound retained delegates while an Explorer dispatcher is stalled. All
+        // callers already catch dispatch errors (including scan-latch reset).
+        if (!cleanup && actions_.size() >= 128) winrt::throw_hresult(E_OUTOFMEMORY);
+        // Reserve BEFORE queueing: allocation failure must not orphan a delegate.
+        actions_.reserve(actions_.size() + 1);
+        auto dispatcher = element.Dispatcher();
+        actions_.push_back({dispatcher.RunAsync(priority, [this, callback, cleanup] {
+            if (cleanup || !stopping_.load()) callback();
+        }), dispatcher});
+    }
+public:
+    void Post(winrt::Windows::UI::Xaml::FrameworkElement const& element,
+              winrt::Windows::UI::Core::CoreDispatcherPriority priority,
+              winrt::Windows::UI::Core::DispatchedHandler const& callback) {
+        Queue(element, priority, callback, false);
+    }
+    void PostCleanup(winrt::Windows::UI::Xaml::FrameworkElement const& element,
+                     winrt::Windows::UI::Core::CoreDispatcherPriority priority,
+                     winrt::Windows::UI::Core::DispatchedHandler const& callback) {
+        try { Queue(element, priority, callback, true); }
+        catch (...) { RetainCode(); } // live XAML handlers may still own this code
+    }
+    void Drain() {
+        std::vector<Entry> pending;
+        { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; pending.swap(actions_); }
+        ULONGLONG deadline = GetTickCount64() + 2000;
+        bool pinned = false;
+        for (auto const& entry : pending) {
+            try {
+                auto started = winrt::Windows::Foundation::AsyncStatus::Started;
+                bool retained = false;
+                while (entry.action.Status() == started) {
+                    if (entry.dispatcher.HasThreadAccess() || GetTickCount64() >= deadline) {
+                        if (!pinned) { RetainCode(); pinned = true; }
+                        retained = true; break;
+                    }
+                    Sleep(10);
+                }
+                if (!retained) entry.action.GetResults();
+            } catch (...) { if (!pinned) { RetainCode(); pinned = true; } }
+        }
+    }
+
+public:
+    static void PinAddress() {}
+    static void RetainCode() {
+        HMODULE pinned = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                reinterpret_cast<PCWSTR>(&PinAddress), &pinned)) {
+            // Without a module reference we cannot safely return from unload.
+            for (;;) Sleep(1000);
+        }
+        Wh_Log(L"Taskbar callback completion unavailable; code retained until Explorer exits");
+    }
+};
+// END TRACKED TASKBAR DISPATCH
+
 namespace {
+TrackedDispatch g_Dispatch;
+rdpstk::WorkQueue g_HostWork;
+void RefreshWidgetUI();
+std::mutex g_NoticeMutex;
+std::wstring g_Notice;
+ULONGLONG g_NoticeTick = 0;
+void HostNotice(const std::wstring& text) {
+    { std::lock_guard<std::mutex> lock(g_NoticeMutex); g_Notice = text; g_NoticeTick = GetTickCount64(); }
+    RefreshWidgetUI();
+}
+std::wstring HostNoticeText() {
+    std::lock_guard<std::mutex> lock(g_NoticeMutex);
+    return GetTickCount64() - g_NoticeTick < 10000 ? g_Notice : L"";
+}
+bool IsRdpNow() {
+    LPWSTR buffer = nullptr; DWORD bytes = 0;
+    bool rdp = WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
+        WTSClientProtocolType, &buffer, &bytes) && buffer && bytes >= sizeof(USHORT) &&
+        *reinterpret_cast<USHORT*>(buffer) == 2;
+    if (buffer) WTSFreeMemory(buffer);
+    return rdp;
+}
 
 // ── Settings ──────────────────────────────────────────────────────────────
 
@@ -384,6 +776,7 @@ RdpClipScan ScanForRdpClipInSession(const wchar_t* expectedPath, bool logSkips) 
                        // "not running" from a failed enumeration
     }
     scan.enumerated = true;
+    struct FreeProcesses { PWTS_PROCESS_INFOW value; ~FreeProcesses() { WTSFreeMemory(value); } } freeProcesses{procs};
 
     for (DWORD i = 0; i < count; ++i) {
         const WTS_PROCESS_INFOW& p = procs[i];
@@ -396,6 +789,7 @@ RdpClipScan ScanForRdpClipInSession(const wchar_t* expectedPath, bool logSkips) 
 
         wchar_t actual[MAX_PATH] = {};
         if (!GetProcessImagePath(p.ProcessId, actual, ARRAYSIZE(actual))) {
+            scan.enumerated = false; // an inaccessible match is not evidence of absence
             if (logSkips)
                 Wh_Log(L"Clipboard: pid=%lu is named rdpclip.exe but its image path "
                        L"could not be resolved (GLE=%d) — skipped, not touched",
@@ -412,34 +806,29 @@ RdpClipScan ScanForRdpClipInSession(const wchar_t* expectedPath, bool logSkips) 
         scan.pids.push_back(p.ProcessId);
     }
 
-    WTSFreeMemory(procs);
     return scan;
 }
 
-// Unload safety, exactly as D-12 handles the minimize send: an atomic in-flight
-// counter that Wh_ModUninit drains with a bounded wait, so no detached thread
-// is still executing this DLL's code when Windhawk unloads it.
-std::atomic<int> g_ClipboardRestartsInFlight{ 0 };
-// Serializes restarts. A second click while one is still in flight would
-// terminate the instance the first click had just launched; extra clicks are
-// logged and dropped instead.
+// The owned host work queue serializes clipboard and DVC operations and joins
+// active work at unload. A busy latch prevents repeated clipboard clicks.
 std::atomic<bool> g_ClipboardRestartBusy{ false };
 
 // The whole find → verify → terminate → wait → launch sequence.
 // Background thread only (see RestartRdpClipAsync).
-void RestartRdpClipNow() {
+bool RestartRdpClipNow() {
+    if (!IsRdpNow()) return false;
     wchar_t expectedPath[MAX_PATH] = {};
     if (!GetRdpClipImagePath(expectedPath, ARRAYSIZE(expectedPath))) {
         Wh_Log(L"Restart clipboard: could not resolve System32\\rdpclip.exe — "
                L"aborting without terminating or launching anything");
-        return;
+        return false;
     }
 
     RdpClipScan scan = ScanForRdpClipInSession(expectedPath, /*logSkips=*/true);
     if (!scan.enumerated) {
         Wh_Log(L"Restart clipboard: process enumeration failed — aborting without "
                L"terminating or launching anything");
-        return;
+        return false;
     }
 
     // Zero verified matches is neither an error nor a reason to stop: there is
@@ -457,17 +846,27 @@ void RestartRdpClipNow() {
 
     bool terminatedAny = false;
     for (DWORD pid : scan.pids) {
-        HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+        HANDLE h = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
         if (!h) {
             Wh_Log(L"Restart clipboard: OpenProcess(pid=%lu) failed GLE=%d — skipped",
                    pid, GetLastError());
-            continue;
+            return false;
+        }
+        // Reverify on the actual handle being terminated; a PID from the scan
+        // may have exited/reused before OpenProcess. Holding this handle pins identity.
+        wchar_t image[MAX_PATH]{}; DWORD imageChars = ARRAYSIZE(image);
+        DWORD currentSession = 0, candidateSession = 0;
+        if (!IsRdpNow() || !QueryFullProcessImageNameW(h, 0, image, &imageChars) ||
+            CompareStringOrdinal(image, -1, expectedPath, -1, TRUE) != CSTR_EQUAL ||
+            !ProcessIdToSessionId(GetCurrentProcessId(), &currentSession) ||
+            !ProcessIdToSessionId(pid, &candidateSession) || currentSession != candidateSession) {
+            CloseHandle(h); return false;
         }
         if (!TerminateProcess(h, 0)) {
             Wh_Log(L"Restart clipboard: TerminateProcess(pid=%lu) failed GLE=%d",
                    pid, GetLastError());
             CloseHandle(h);
-            continue;
+            return false;
         }
         terminatedAny = true;
         // Bounded wait on the handle — never an assumption that termination is
@@ -477,9 +876,10 @@ void RestartRdpClipNow() {
             Wh_Log(L"Restart clipboard: pid=%lu terminated and exited", pid);
         else
             Wh_Log(L"Restart clipboard: pid=%lu terminated but did not signal exit "
-                   L"within %lu ms (wait=%lu) — continuing anyway",
+                   L"within %lu ms (wait=%lu) — restart unconfirmed",
                    pid, kRdpClipExitWaitMs, w);
         CloseHandle(h);
+        if (w != WAIT_OBJECT_0) return false;
     }
 
     // Let the window manager finish the USER-side rundown (see the constants'
@@ -492,16 +892,18 @@ void RestartRdpClipNow() {
     // race up to the settle above — a respawn slower than that would still land
     // beside the replacement, which is why it is logged either way.
     RdpClipScan after = ScanForRdpClipInSession(expectedPath, /*logSkips=*/false);
-    if (after.enumerated && !after.pids.empty()) {
+    if (!after.enumerated) return false;
+    if (!after.pids.empty()) {
         Wh_Log(L"Restart clipboard: rdpclip.exe is already running again (pid=%lu) "
                L"— not launching a second one", after.pids.front());
         QueryWtsState();
-        return;
+        return true;
     }
 
     // CreateProcessW on the resolved System32 path. The replacement inherits
     // this process's session and token automatically — no impersonation, no
     // session plumbing, and it lands in the right session by construction.
+    if (!IsRdpNow()) return false;
     wchar_t cmdLine[MAX_PATH + 4] = {};
     wsprintfW(cmdLine, L"\"%s\"", expectedPath);
     STARTUPINFOW si{};
@@ -512,7 +914,7 @@ void RestartRdpClipNow() {
         Wh_Log(L"Restart clipboard: CreateProcessW('%s') failed GLE=%d",
                expectedPath, GetLastError());
         QueryWtsState();
-        return;
+        return false;
     }
     Wh_Log(L"Restart clipboard: launched '%s' pid=%lu",
            expectedPath, pi.dwProcessId);
@@ -523,30 +925,27 @@ void RestartRdpClipNow() {
     // This goes through QueryWtsState — the same function the safety-net timer
     // calls — so no new timer and no second status code path.
     QueryWtsState();
+    return true;
 }
 
-// Detached one-shot per click, the D-12 pattern verbatim: no window, no message
-// loop, no state past its own return. It must not run on the XAML UI thread —
-// the sequence blocks on process termination and a settle, and explorer.exe's
-// message loop can never wait on that.
+// Queue the operation off the XAML UI thread. The worker is owned, bounded,
+// and stopped before taskbar delegates are drained at unload.
 void RestartRdpClipAsync() {
     bool expected = false;
     if (!g_ClipboardRestartBusy.compare_exchange_strong(expected, true)) {
-        Wh_Log(L"Restart clipboard: a restart is already in flight — click ignored");
-        return;
+        HostNotice(L"Clipboard restart already in progress"); return;
     }
-    g_ClipboardRestartsInFlight.fetch_add(1, std::memory_order_acq_rel);
-    std::thread([]() {
-        // The worker allocates (the scan's vector), so it is wrapped: an
-        // exception escaping a detached thread would call std::terminate and
-        // take explorer.exe down with it. The latch and the counter are
-        // released either way.
-        try {
-            RestartRdpClipNow();
-        } WH_CATCH(L"RestartRdpClip")
+    HostNotice(L"Clipboard restart queued...");
+    if (!g_HostWork.Post([] {
+        bool ok = false;
+        try { ok = RestartRdpClipNow(); } WH_CATCH(L"RestartRdpClip")
         g_ClipboardRestartBusy.store(false);
-        g_ClipboardRestartsInFlight.fetch_sub(1, std::memory_order_acq_rel);
-    }).detach();
+        HostNotice(ok ? L"Clipboard restart accepted; copy/paste not verified"
+                      : L"Clipboard restart failed; see Windhawk log");
+    })) {
+        g_ClipboardRestartBusy.store(false);
+        HostNotice(L"Clipboard restart unavailable during shutdown or busy queue");
+    }
 }
 
 // ── WTS session state ─────────────────────────────────────────────────────
@@ -585,23 +984,6 @@ constexpr BYTE RELAY_CMD_QUERY_STATUS_BYTE      = 0x03;
 // LocalWidgetStatus and LocalWidgetCommandPayload — never a bare byte.
 // Mirrored copy in dvc-plugin/relay/common/RelayIds.h (D-10: separate build
 // systems keep their own copies; the decision log reconciles them).
-#pragma pack(push, 1)
-struct RelayStatusReply {
-    DWORD magic;          // kRelayStatusReplyMagic
-    DWORD version;        // kRelayStatusReplyVersion
-    BYTE  stateKnown;     // 1 = the two fields below came from a fresh,
-                          //     valid client status snapshot; 0 = the relay
-                          //     could not read one (missing registry pointer,
-                          //     missing/stale/mismatched file) and they are
-                          //     meaningless — never render them as facts
-    BYTE  sessionActive;  // client mod reports a live mstsc session frame
-    BYTE  fullscreen;     // that session is currently fullscreen
-    BYTE  reserved;
-};
-#pragma pack(pop)
-constexpr DWORD kRelayStatusReplyMagic   = 0x50525352;  // 'RSRP'
-constexpr DWORD kRelayStatusReplyVersion = 1;
-
 struct WtsState {
     std::wstring clientName;                              // WTSClientName; empty when none reported
     WTS_CONNECTSTATE_CLASS connectState = WTSDisconnected; // WTSConnectState
@@ -731,7 +1113,7 @@ constexpr auto WTS_WND_CLASS = L"WH_RdpstkHostWtsNotify";
 constexpr UINT_PTR WTS_REFRESH_TIMER_ID  = 1;
 constexpr UINT     WTS_REFRESH_INTERVAL_MS = 30000;
 // Client-state poll (see "Periodic client-state poll" below): rides this
-// thread's timer, fires the poll on a detached one-shot. 3 s sits in the
+// thread's timer, queues the poll on the owned worker. 3 s sits in the
 // requested 2–4 s range: responsive against the view's staleness window
 // without chattering the channel.
 constexpr UINT_PTR RELAY_POLL_TIMER_ID = 2;
@@ -786,9 +1168,7 @@ LRESULT CALLBACK WtsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         if (wParam == RELAY_POLL_TIMER_ID) {
-            // Fire-and-forget: the poll itself runs on a detached one-shot
-            // (it blocks on channel open + read), so this timer handler never
-            // stalls the WTS thread's message loop.
+            // Queue onto the owned worker; channel I/O never blocks this timer.
             PollClientStateAsync();
             return 0;
         }
@@ -862,9 +1242,10 @@ void StartWtsThread() {
         g_hWtsThreadReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     else
         ResetEvent(g_hWtsThreadReady);
+    if (!g_hWtsThreadReady) { Wh_Log(L"Thread readiness event creation failed"); return; }
     DWORD threadId = 0;
     g_hWtsThread = CreateThread(nullptr, 0, WtsThread, nullptr, 0, &threadId);
-    g_wtsThreadId.store(threadId);
+    g_wtsThreadId.store(g_hWtsThread ? threadId : 0);
 }
 
 void StopWtsThread() {
@@ -875,238 +1256,138 @@ void StopWtsThread() {
         PostThreadMessageW(threadId, WM_QUIT, 0, 0);
     }
     if (g_hWtsThread) {
-        WaitForSingleObject(g_hWtsThread, 3000);
+        WaitForSingleObject(g_hWtsThread, INFINITE);
         CloseHandle(g_hWtsThread);
         g_hWtsThread = nullptr;
         g_wtsThreadId.store(0);
     }
 }
 
-// ── Relay DVC send: open → write → READ → close ───────────────────────────
-//
-// Sends one command byte to the client over the production DVC channel, then
-// reads the relay plugin's small status reply back on the same channel before
-// closing. The client-side relay plugin forwards command bytes (minimize,
-// fullscreen toggle) to the client mod's CitadelRdpTaskbarRelay receiver, and
-// answers the status query itself; either way it writes a RelayStatusReply
-// back before the host's close (see DECISIONS.md D-12 for the original send
-// shape, D-38 for the read leg).
-//
-// WHY THE READ EXISTS — the Minimize-button root cause (Task 2, D-37). The
-// original shape here was open-write-close with the close immediately after
-// the write. WTSVirtualChannelWrite on a dynamic channel completes when the
-// data is QUEUED to the RDP stack, not when it is delivered; an immediate
-// WTSVirtualChannelClose races the asynchronous delivery, and the whole
-// channel can be torn down before the queued byte ever reaches the client
-// plugin's OnDataReceived. The probe trigger — the only send path ever proven
-// on real hardware (LOOP-003/LOOP-006) — guarded against exactly this with a
-// deliberate Sleep(500) before its close ("give the last write time to drain
-// before the channel tears down", dvc-plugin/probe/trigger/Trigger.cpp); that
-// drain was silently dropped when the send was adapted into this mod, which
-// is the structural difference between Minimize (cross-machine, broken) and
-// Disconnect / Restart Clipboard (purely local, fine). The bounded read is
-// the principled replacement for the sleep: the reply can only arrive after
-// the client plugin has received and processed the command, so a successful
-// read IS the delivery confirmation — and it carries the client's state back
-// as a bonus.
-//
-// Threading (DECISIONS.md D-12): a short-lived, detached background thread
-// per send — no window, no message loop, no state past its own return. It
-// must not run on the XAML UI / click thread: open latency plus a read
-// timeout of up to RELAY_REPLY_TIMEOUT_MS is far too long for explorer.exe's
-// message loop.
-//
-// Unload safety: an atomic in-flight counter lets Wh_ModUninit wait (bounded)
-// for any outstanding send to finish, so no detached thread is still executing
-// this DLL's code when Windhawk unloads it.
-std::atomic<int> g_RelaySendsInFlight{ 0 };
+// ── Correlated DVC requests and action feedback ───────────────────────────
+// One owned worker performs open/write/read/close away from the XAML thread.
+// Reading before closing preserves D-37's delivery-race fix. Requests carry
+// protocol version, correlation ID and (for actions) PID + process birth.
+// v1 replies are upgrade-required, never action confirmation. No retries.
 
-// Bounded wait for the relay's reply. Generous against session round-trip
-// latency; the reply normally arrives in tens of milliseconds.
-constexpr ULONG RELAY_REPLY_TIMEOUT_MS = 2000;
-
-// ── Cached client view (from RelayStatusReply) ────────────────────────────
-// The host's best knowledge of the client's state, refreshed by every send's
-// read leg — clicks and the periodic status poll alike. Staleness: a view
-// older than kClientViewStaleMs (poll interval + slack) degrades back to
-// unknown, so a client that stops answering can never leave a frozen
-// "fullscreen"/"windowed" label on the widget.
 struct ClientView {
-    bool      known = false;      // a valid reply with stateKnown=1 was read
-    bool      sessionActive = false;
-    bool      fullscreen = false;
-    ULONGLONG lastReplyTick = 0;  // GetTickCount64 at the last valid reply
+    bool known = false, sessionActive = false, fullscreen = false, iconic = false;
+    DWORD pid = 0;
+    ULONGLONG birth = 0, snapshotTick = 0, lastReplyTick = 0;
+    rdpstk::Result result = rdpstk::Result::Unavailable;
 };
 std::mutex g_ClientViewMutex;
 ClientView g_ClientView;
 constexpr ULONGLONG kClientViewStaleMs = 10000;
-
-// Snapshot for display, staleness applied.
 ClientView GetClientView() {
-    std::lock_guard<std::mutex> g(g_ClientViewMutex);
-    ClientView v = g_ClientView;
-    if (v.known && GetTickCount64() - v.lastReplyTick > kClientViewStaleMs)
-        v.known = false;
-    return v;
-}
-
-// Parses a RelayStatusReply out of a raw DVC read. The reply is searched for
-// at offset 0 and at offset 8 (sizeof(CHANNEL_PDU_HEADER)) — server-side
-// virtual-channel reads have historically prefixed data with that header, and
-// checking both offsets costs nothing while the exact framing on this OS
-// build is unverified on hardware. Logs which offset matched.
-bool ParseRelayStatusReply(const BYTE* buf, DWORD len, RelayStatusReply* out) {
-    for (DWORD off : { 0ul, 8ul }) {
-        if (len < off + sizeof(RelayStatusReply)) continue;
-        RelayStatusReply r;
-        memcpy(&r, buf + off, sizeof(r));
-        if (r.magic != kRelayStatusReplyMagic) continue;
-        if (r.version != kRelayStatusReplyVersion) {
-            Wh_Log(L"Relay reply: magic at offset %lu but version %lu != %lu "
-                   L"— ignored", off, r.version, (DWORD)kRelayStatusReplyVersion);
-            continue;
-        }
-        Wh_Log(L"Relay reply: parsed at offset %lu — known=%u active=%u "
-               L"fullscreen=%u", off, r.stateKnown, r.sessionActive, r.fullscreen);
-        *out = r;
-        return true;
+    std::lock_guard<std::mutex> lock(g_ClientViewMutex);
+    ClientView view = g_ClientView;
+    if (view.known && !rdpstk::Fresh(view.lastReplyTick, GetTickCount64(), kClientViewStaleMs)) {
+        view.known = false; view.result = rdpstk::Result::Unavailable;
     }
-    return false;
+    return view;
 }
+std::atomic<bool> g_RelayPollInFlight{false}, g_RelayActionBusy{false};
+std::mutex g_ActionMutex;
+BYTE g_ActionCommand = 0;
+ClientView g_ActionBefore;
+ULONGLONG g_ActionTick = 0;
 
-// Applies a parsed reply to the cached view; refreshes the widget when the
-// displayed facts changed.
-void ApplyRelayStatusReply(const RelayStatusReply& r) {
-    bool changed = false;
+void ApplyRelayReply(const rdpstk::Reply& reply) {
     {
-        std::lock_guard<std::mutex> g(g_ClientViewMutex);
-        ClientView next;
-        next.known         = r.stateKnown != 0;
-        next.sessionActive = r.sessionActive != 0;
-        next.fullscreen    = r.fullscreen != 0;
-        next.lastReplyTick = GetTickCount64();
-        changed = next.known != g_ClientView.known ||
-                  next.sessionActive != g_ClientView.sessionActive ||
-                  next.fullscreen != g_ClientView.fullscreen;
-        g_ClientView = next;
+        std::lock_guard<std::mutex> lock(g_ClientViewMutex);
+        g_ClientView = {reply.known != 0, reply.active != 0, reply.fullscreen != 0,
+            reply.iconic != 0, reply.targetPid, reply.targetBirth, reply.snapshotTick,
+            GetTickCount64(), (rdpstk::Result)reply.result};
     }
-    if (changed) RefreshWidgetUI();
+    // Refresh even on unknown/failed/unchanged replies: expiration is a visible
+    // transition and feedback needs a repaint after its retention interval.
+    RefreshWidgetUI();
+}
+void ObserveHostAction() {
+    if (!g_RelayActionBusy.load()) return;
+    ClientView view = GetClientView();
+    std::lock_guard<std::mutex> lock(g_ActionMutex);
+    if (!g_ActionCommand) return; // send is still in flight
+    const auto& before = g_ActionBefore;
+    if (view.known && view.pid == before.pid && view.birth == before.birth &&
+        view.snapshotTick > before.snapshotTick &&
+        rdpstk::WindowOutcome(g_ActionCommand == RELAY_CMD_MINIMIZE_BYTE ? 1 : 3,
+                              before.fullscreen, view.fullscreen, view.iconic)) {
+        g_RelayActionBusy.store(false); g_ActionCommand = 0;
+        HostNotice(L"Requested client window state observed");
+    } else if (GetTickCount64() - g_ActionTick > 5000) {
+        g_RelayActionBusy.store(false); g_ActionCommand = 0;
+        HostNotice(L"Client action outcome unknown; not retried");
+    }
 }
 
-// The one relay send path: open, write the command byte, read the reply
-// (bounded), close. Detached one-shot per call (D-12); every step logs its
-// outcome so a live test says exactly where a failed send stopped.
-void SendRelayCommandAsync(BYTE cmd, PCWSTR label) {
-    g_RelaySendsInFlight.fetch_add(1, std::memory_order_acq_rel);
-    std::thread([cmd, label]() {
-        // NULL (not INVALID_HANDLE_VALUE) is the failure return here.
-        HANDLE hChannel = WTSVirtualChannelOpenEx(
-            WTS_CURRENT_SESSION,
-            const_cast<LPSTR>(RELAY_DVC_CHANNEL),
-            WTS_CHANNEL_OPTION_DYNAMIC);
-        if (!hChannel) {
-            // No relay plugin listening on the client (channel never opened),
-            // or no DVC infrastructure. Log and do nothing further — never a
-            // dialog, never anything that interrupts explorer.exe.
-            Wh_Log(L"%s send: WTSVirtualChannelOpenEx('%hs') failed GLE=%d "
-                   L"— no relay listening? dropping", label, RELAY_DVC_CHANNEL,
-                   GetLastError());
-            g_RelaySendsInFlight.fetch_sub(1, std::memory_order_acq_rel);
-            return;
-        }
-
-        BYTE sendByte = cmd;
-        DWORD written = 0;
-        if (!WTSVirtualChannelWrite(hChannel, reinterpret_cast<PCHAR>(&sendByte),
-                                    1, &written)) {
-            Wh_Log(L"%s send: WTSVirtualChannelWrite failed GLE=%d",
-                   label, GetLastError());
-        } else {
-            Wh_Log(L"%s send: wrote 0x%02X (%lu byte) to DVC '%hs' — waiting "
-                   L"for the relay's reply", label, sendByte, written,
-                   RELAY_DVC_CHANNEL);
-
-            // The read leg. This is both the delivery confirmation (see the
-            // banner comment) and the client-state refresh.
-            BYTE buf[256] = {};
-            DWORD bytesRead = 0;
-            if (!WTSVirtualChannelRead(hChannel, RELAY_REPLY_TIMEOUT_MS,
-                                       reinterpret_cast<PCHAR>(buf),
-                                       sizeof(buf), &bytesRead)) {
-                Wh_Log(L"%s send: WTSVirtualChannelRead failed/timed out "
-                       L"GLE=%d — delivery of 0x%02X is UNCONFIRMED (an old "
-                       L"relay build that never replies also lands here)",
-                       label, GetLastError(), sendByte);
-            } else {
-                RelayStatusReply reply{};
-                if (ParseRelayStatusReply(buf, bytesRead, &reply)) {
-                    Wh_Log(L"%s send: delivery confirmed (%lu-byte reply)",
-                           label, bytesRead);
-                    ApplyRelayStatusReply(reply);
-                } else {
-                    Wh_Log(L"%s send: read %lu byte(s) but no valid "
-                           L"RelayStatusReply in them — delivery likely, state "
-                           L"not updated", label, bytesRead);
-                }
-            }
-        }
-
-        WTSVirtualChannelClose(hChannel);
-        g_RelaySendsInFlight.fetch_sub(1, std::memory_order_acq_rel);
-    }).detach();
+rdpstk::Reply RunRelayRequest(BYTE command, const ClientView& before) {
+    rdpstk::Request request;
+    static std::atomic<ULONGLONG> nextRequest{1};
+    request.requestId = nextRequest.fetch_add(1); request.command = command;
+    if (command != RELAY_CMD_QUERY_STATUS_BYTE) {
+        request.targetPid = before.pid; request.targetBirth = before.birth;
+    }
+    rdpstk::Reply reply; reply.command = command; reply.requestId = request.requestId;
+    reply.result = (DWORD)rdpstk::Result::Unavailable;
+    if (!IsRdpNow()) return reply;
+    struct Channel {
+        HANDLE handle = nullptr;
+        ~Channel() { if (handle) WTSVirtualChannelClose(handle); }
+    } channel;
+    channel.handle = WTSVirtualChannelOpenEx(WTS_CURRENT_SESSION,
+        const_cast<LPSTR>(RELAY_DVC_CHANNEL), WTS_CHANNEL_OPTION_DYNAMIC);
+    if (!channel.handle) return reply;
+    DWORD written = 0;
+    if (!WTSVirtualChannelWrite(channel.handle, reinterpret_cast<PCHAR>(&request), sizeof(request), &written) ||
+        written != sizeof(request)) { reply.result = (DWORD)rdpstk::Result::Unknown; return reply; }
+    BYTE buffer[CHANNEL_PDU_LENGTH]{}; DWORD bytes = 0;
+    if (!WTSVirtualChannelRead(channel.handle, 4000, reinterpret_cast<PCHAR>(buffer), sizeof(buffer), &bytes) || !bytes) {
+        reply.result = (DWORD)rdpstk::Result::TimedOut; return reply;
+    }
+    rdpstk::Reply parsed;
+    if (rdpstk::ParseReply(buffer, bytes, request, &parsed)) return parsed;
+    reply.result = (DWORD)rdpstk::Result::Unsupported;
+    return reply;
 }
 
-// ── Periodic client-state poll ────────────────────────────────────────────
-// The host needs the client's fullscreen state between clicks, not only right
-// after one — the fullscreen button must relabel itself when the user toggles
-// from the client side. Every RELAY_POLL_INTERVAL_MS the WTS thread's timer
-// fires one status query through the exact same open-write-read-close path as
-// every click (no separate mechanism), gated on the session being RDP and on
-// no other poll still being in flight. The interval constant
-// (RELAY_POLL_INTERVAL_MS) lives with the WTS timer ids above, where the
-// timer is armed.
-std::atomic<bool> g_RelayPollInFlight{ false };
+void SendRelayCommandAsync(BYTE command, PCWSTR label) {
+    ClientView before = GetClientView();
+    if (!before.known || !before.sessionActive) { HostNotice(rdpstk::ResultText(before.result)); return; }
+    bool expected = false;
+    if (!g_RelayActionBusy.compare_exchange_strong(expected, true)) {
+        HostNotice(L"Another client action is in progress"); return;
+    }
+    HostNotice(std::wstring(label) + L": sending...");
+    if (!g_HostWork.Post([command, label, before] {
+        struct Reset { bool accepted = false; ~Reset() { if (!accepted) g_RelayActionBusy.store(false); } } reset;
+        rdpstk::Reply reply;
+        try { reply = RunRelayRequest(command, before); } WH_CATCH(L"Relay request")
+        ApplyRelayReply(reply);
+        auto result = (rdpstk::Result)reply.result;
+        if (result == rdpstk::Result::Accepted) {
+            std::lock_guard<std::mutex> lock(g_ActionMutex);
+            g_ActionCommand = command; g_ActionBefore = GetClientView(); g_ActionTick = GetTickCount64();
+            reset.accepted = true;
+        } else { g_RelayActionBusy.store(false); }
+        HostNotice(std::wstring(label) + L": " + rdpstk::ResultText(result));
+    })) {
+        g_RelayActionBusy.store(false); HostNotice(L"Client action unavailable during shutdown or busy queue");
+    }
+}
 
 void PollClientStateAsync() {
-    USHORT proto;
-    {
-        std::lock_guard<std::mutex> g(g_WtsMutex);
-        proto = g_WtsState.protocol;
-    }
-    if (proto != kProtocolRdp) return;  // console session: nothing to ask
+    ObserveHostAction();
+    RefreshWidgetUI(); // also repaint on cached state expiry / expired feedback
+    if (!IsRdpNow()) return;
     bool expected = false;
-    if (!g_RelayPollInFlight.compare_exchange_strong(expected, true))
-        return;  // previous poll still open/reading — never stack them
-    g_RelaySendsInFlight.fetch_add(1, std::memory_order_acq_rel);
-    std::thread([]() {
-        HANDLE hChannel = WTSVirtualChannelOpenEx(
-            WTS_CURRENT_SESSION,
-            const_cast<LPSTR>(RELAY_DVC_CHANNEL),
-            WTS_CHANNEL_OPTION_DYNAMIC);
-        if (hChannel) {
-            BYTE cmd = RELAY_CMD_QUERY_STATUS_BYTE;
-            DWORD written = 0;
-            if (WTSVirtualChannelWrite(hChannel, reinterpret_cast<PCHAR>(&cmd),
-                                       1, &written)) {
-                BYTE buf[256] = {};
-                DWORD bytesRead = 0;
-                if (WTSVirtualChannelRead(hChannel, RELAY_REPLY_TIMEOUT_MS,
-                                          reinterpret_cast<PCHAR>(buf),
-                                          sizeof(buf), &bytesRead)) {
-                    RelayStatusReply reply{};
-                    if (ParseRelayStatusReply(buf, bytesRead, &reply))
-                        ApplyRelayStatusReply(reply);
-                }
-                // A failed/timed-out poll read is deliberately NOT logged per
-                // tick — with no relay listening it would repeat every 3 s
-                // forever. The staleness window quietly degrades the view to
-                // unknown instead, which is the honest rendering.
-            }
-            WTSVirtualChannelClose(hChannel);
-        }
-        g_RelaySendsInFlight.fetch_sub(1, std::memory_order_acq_rel);
-        g_RelayPollInFlight.store(false);
-    }).detach();
+    if (!g_RelayPollInFlight.compare_exchange_strong(expected, true)) return;
+    if (!g_HostWork.Post([] {
+        struct Reset { ~Reset() { g_RelayPollInFlight.store(false); } } reset;
+        rdpstk::Reply reply;
+        try { reply = RunRelayRequest(RELAY_CMD_QUERY_STATUS_BYTE, {}); } WH_CATCH(L"Relay poll")
+        ApplyRelayReply(reply); ObserveHostAction();
+    })) g_RelayPollInFlight.store(false);
 }
 
 // ── XAML injection state ──────────────────────────────────────────────────
@@ -1475,6 +1756,7 @@ void ApplyThemeToWidget(Grid const& widget) {
 // Live theme change: re-read the system theme and, when it flipped, repaint
 // every widget with the newly inverted palette. Any thread.
 void RefreshThemeUI() {
+    if (g_Unloading.load()) return;
     if (!RefreshSystemTheme()) return;
     bool light = g_SystemLightTheme.load();
     Wh_Log(L"[theme] system theme now %s — applying the %s panel palette",
@@ -1482,7 +1764,7 @@ void RefreshThemeUI() {
     for (auto& widget : GetLiveWidgets()) {
         try {
             auto weak = make_weak(widget);
-            widget.Dispatcher().RunAsync(
+            g_Dispatch.Post(widget,
                 Windows::UI::Core::CoreDispatcherPriority::Normal,
                 [weak]() {
                     if (auto w = weak.get()) {
@@ -1597,8 +1879,14 @@ void ApplyStateToWidget(Grid widget) {
 
     if (auto tb = FindByName<TextBlock>(widget, kClientNameName))
         tb.Text(nameLine);
-    if (auto tb = FindByName<TextBlock>(widget, kStateName))
-        tb.Text(stateLine);
+    auto notice = HostNoticeText();
+    ClientView peer = GetClientView();
+    if (auto tb = FindByName<TextBlock>(widget, kStateName)) {
+        auto text = !notice.empty() ? notice : rdp && !peer.known
+            ? std::wstring(L"Client: ") + rdpstk::ResultText(peer.result) : stateLine;
+        tb.Text(text);
+        SetElementTooltip(tb, text.c_str());
+    }
     if (auto btn = FindByName<Button>(widget, kDisconnectName)) {
         // Enabled only over RDP — never offer to disconnect the physical
         // console session (that would kick the local user to the lock screen).
@@ -1608,14 +1896,14 @@ void ApplyStateToWidget(Grid widget) {
     if (auto btn = FindByName<Button>(widget, kMinimizeName)) {
         // Enabled only over RDP — a minimize signal is meaningless on the
         // physical console (no remote mstsc window to minimize).
-        btn.IsEnabled(rdp);
-        btn.Opacity(rdp ? 1.0 : 0.35);
+        btn.IsEnabled(rdp && peer.known && peer.sessionActive && !g_RelayActionBusy.load());
+        btn.Opacity(btn.IsEnabled() ? 1.0 : 0.35);
     }
     if (auto btn = FindByName<Button>(widget, kClipboardName)) {
         // Enabled only over RDP — there is no rdpclip on a console session, so
         // the action is meaningless there. Re-checked at click time as well.
         btn.IsEnabled(rdp);
-        btn.Opacity(rdp ? 1.0 : 0.35);
+        btn.Opacity(btn.IsEnabled() ? 1.0 : 0.35);
     }
     if (auto btn = FindByName<Button>(widget, kFullscreenName)) {
         // Enabled only over RDP, like every other action button, re-checked
@@ -1625,8 +1913,8 @@ void ApplyStateToWidget(Grid widget) {
         // pattern, so this is never a blind, unlabeled toggle. When the view
         // is unknown (no reply yet, stale, or the client mod isn't reporting)
         // the button says so honestly instead of guessing a direction.
-        btn.IsEnabled(rdp);
-        btn.Opacity(rdp ? 1.0 : 0.35);
+        btn.IsEnabled(rdp && peer.known && peer.sessionActive && !g_RelayActionBusy.load());
+        btn.Opacity(btn.IsEnabled() ? 1.0 : 0.35);
         ClientView v = GetClientView();
         bool known = v.known && v.sessionActive;
         bool fs    = known && v.fullscreen;
@@ -1761,6 +2049,7 @@ Grid BuildWidget() {
         L"keep running here.");
     disconnect.Click(RoutedEventHandler(
         [](IInspectable const&, RoutedEventArgs const&) {
+            if (g_Unloading.load()) return;
             USHORT proto;
             {
                 std::lock_guard<std::mutex> g(g_WtsMutex);
@@ -1768,7 +2057,7 @@ Grid BuildWidget() {
             }
             // Re-checked at click time (not only via IsEnabled) so a stale
             // widget state can never disconnect a console session.
-            if (proto != kProtocolRdp) {
+            if (proto != kProtocolRdp || !IsRdpNow()) {
                 Wh_Log(L"Disconnect clicked on non-RDP session — ignored");
                 return;
             }
@@ -1777,7 +2066,8 @@ Grid BuildWidget() {
             if (!WTSDisconnectSession(WTS_CURRENT_SERVER_HANDLE,
                                       WTS_CURRENT_SESSION, FALSE)) {
                 Wh_Log(L"WTSDisconnectSession failed GLE=%d", GetLastError());
-            }
+                HostNotice(L"Disconnect request failed; see Windhawk log");
+            } else HostNotice(L"Disconnect request accepted");
         }));
     Grid::SetColumn(disconnect, 4);
     layout.Children().Append(disconnect);
@@ -1798,6 +2088,7 @@ Grid BuildWidget() {
         L"Switch the client between fullscreen and windowed");
     fullscreen.Click(RoutedEventHandler(
         [](IInspectable const&, RoutedEventArgs const&) {
+            if (g_Unloading.load()) return;
             USHORT proto;
             {
                 std::lock_guard<std::mutex> g(g_WtsMutex);
@@ -1805,7 +2096,7 @@ Grid BuildWidget() {
             }
             // Re-checked at click time (not only via IsEnabled), matching
             // every other action button in this toolkit.
-            if (proto != kProtocolRdp) {
+            if (proto != kProtocolRdp || !IsRdpNow()) {
                 Wh_Log(L"Fullscreen toggle clicked on non-RDP session — ignored");
                 return;
             }
@@ -1819,7 +2110,7 @@ Grid BuildWidget() {
     // it sends one signal across the RDP Dynamic Virtual Channel to the
     // client-side mod's CitadelRdpTaskbarRelay receiver (command 0x01), via the
     // dvc-plugin relay, which minimizes the remote mstsc window on the client.
-    // The open-write-close happens on a detached background thread so
+    // The open-write-read-close runs on the owned background worker so
     // explorer.exe's message loop never blocks on channel latency (D-12). Glyph
     // matches the client mod's thumb-bar Minimize (Segoe MDL2 0xE921).
     Button minimize;
@@ -1833,6 +2124,7 @@ Grid BuildWidget() {
         L"The session stays connected.");
     minimize.Click(RoutedEventHandler(
         [](IInspectable const&, RoutedEventArgs const&) {
+            if (g_Unloading.load()) return;
             USHORT proto;
             {
                 std::lock_guard<std::mutex> g(g_WtsMutex);
@@ -1840,7 +2132,7 @@ Grid BuildWidget() {
             }
             // Re-checked at click time (not only via IsEnabled) so a stale
             // widget state can never fire a minimize on a console session.
-            if (proto != kProtocolRdp) {
+            if (proto != kProtocolRdp || !IsRdpNow()) {
                 Wh_Log(L"Minimize clicked on non-RDP session — ignored");
                 return;
             }
@@ -1857,7 +2149,7 @@ Grid BuildWidget() {
     // for the classic "copy-and-paste stopped working over RDP" failure
     // (EXPANSION_RESEARCH §4.1). Like Disconnect it acts locally, with no DVC
     // and no client-side involvement; like Minimize it runs off the XAML UI
-    // thread on a detached one-shot (D-12), because the sequence blocks on
+    // thread on the owned worker, because the sequence blocks on
     // process termination. Glyph: Segoe MDL2 Paste (0xE77F).
     Button clipboard;
     clipboard.Name(kClipboardName);
@@ -1875,6 +2167,7 @@ Grid BuildWidget() {
         L"clipboard is discarded.");
     clipboard.Click(RoutedEventHandler(
         [](IInspectable const&, RoutedEventArgs const&) {
+            if (g_Unloading.load()) return;
             USHORT proto;
             {
                 std::lock_guard<std::mutex> g(g_WtsMutex);
@@ -1882,7 +2175,7 @@ Grid BuildWidget() {
             }
             // Re-checked at click time (not only via IsEnabled), so a stale
             // widget state can never run this against a console session.
-            if (proto != kProtocolRdp) {
+            if (proto != kProtocolRdp || !IsRdpNow()) {
                 Wh_Log(L"Restart clipboard clicked on non-RDP session — ignored");
                 return;
             }
@@ -1900,10 +2193,11 @@ Grid BuildWidget() {
 // Refresh from any thread: marshals ApplyStateToWidget onto each live
 // widget's own UI thread (one widget per monitor's taskbar frame).
 void RefreshWidgetUI() {
+    if (g_Unloading.load()) return;
     for (auto& widget : GetLiveWidgets()) {
         try {
             auto weak = make_weak(widget);
-            widget.Dispatcher().RunAsync(
+            g_Dispatch.Post(widget,
                 Windows::UI::Core::CoreDispatcherPriority::Normal,
                 [weak]() {
                     if (auto w = weak.get()) ApplyStateToWidget(w);
@@ -1984,7 +2278,7 @@ void ScheduleScanAsync(FrameworkElement startNode) {
 
     auto weak = make_weak(startNode);
     try {
-        startNode.Dispatcher().RunAsync(
+        g_Dispatch.Post(startNode,
             Windows::UI::Core::CoreDispatcherPriority::Low,
             [weak]() {
                 g_ScanPending = false;
@@ -2017,13 +2311,13 @@ void RemoveWidget() {
         g_Instances.clear();
     }
     for (auto& inst : instances) {
-        Grid rootGrid = inst.rootGrid.get();
-        if (!rootGrid) continue;
         try {
+            Grid rootGrid = inst.rootGrid.get();
+            if (!rootGrid) continue;
             auto weakGrid = make_weak(rootGrid);
             auto weakTray = inst.tray;
             event_token token = inst.trayResizeToken;
-            rootGrid.Dispatcher().RunAsync(
+            g_Dispatch.PostCleanup(rootGrid,
                 Windows::UI::Core::CoreDispatcherPriority::Normal,
                 [weakGrid, weakTray, token]() {
                     // All XAML cleanup must happen on the dispatcher thread.
@@ -2041,7 +2335,7 @@ void RemoveWidget() {
                         }
                     }
                 });
-        } catch (...) {}
+        } catch (...) { TrackedDispatch::RetainCode(); }
     }
 }
 
@@ -2139,6 +2433,10 @@ void PollForTaskbarViewDll() {
 // ── Mod entry points ──────────────────────────────────────────────────────
 
 BOOL Wh_ModInit() {
+    if (g_Unloading.load()) {
+        Wh_Log(L"Taskbar code was retained after unload; restart Explorer before enabling again");
+        return FALSE;
+    }
     g_ModInitTick = GetTickCount64();
     LoadSettings();
 
@@ -2149,6 +2447,7 @@ BOOL Wh_ModInit() {
     // Start the WTS notification thread unconditionally: it is plain
     // user32/wtsapi32 (no COM/WinRT), safe during Explorer's early boot, and
     // the widget needs current state whenever injection happens.
+    if (!g_HostWork.Start()) return FALSE;
     StartWtsThread();
 
     HMODULE taskbarView = GetModuleHandleW(L"Taskbar.View.dll");
@@ -2157,7 +2456,11 @@ BOOL Wh_ModInit() {
     if (taskbarView) {
         // Direct path: DLL already loaded. Hook and trigger immediately.
         g_TaskbarViewDllLoaded = true;
-        if (!HookTaskbarViewDllSymbols(taskbarView)) return FALSE;
+        if (!HookTaskbarViewDllSymbols(taskbarView)) {
+            StopWtsThread(); g_HostWork.Stop();
+            if (g_hWtsThreadReady) { CloseHandle(g_hWtsThreadReady); g_hWtsThreadReady = nullptr; }
+            return FALSE;
+        }
         TriggerInitialScan();
     } else {
         // Cold-start path: DLL not yet loaded. Poll for it and defer all
@@ -2165,7 +2468,7 @@ BOOL Wh_ModInit() {
         PollForTaskbarViewDll();
     }
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Host v0.4.0 initialized — "
+    Wh_Log(L"RDP Session Toolkit Taskbar Host v0.5.1 initialized — "
            L"position=%d width=%d",
            (int)g_Settings.widgetPosition, g_Settings.panelWidth);
     return TRUE;
@@ -2182,22 +2485,14 @@ void Wh_ModUninit() {
         g_hWtsThreadReady = nullptr;
     }
 
+    g_HostWork.Stop();
+    g_Dispatch.Drain();
     RemoveWidget();
+    g_Dispatch.Drain();
 
     // Spin until in-flight hooks finish.
-    for (int i = 0; i < 50 && g_HookCallCounter.load() > 0; ++i) Sleep(100);
+    while (g_HookCallCounter.load() > 0) Sleep(10);
 
-    // Wait (bounded) for any in-flight one-shot relay DVC sends (clicks and
-    // status polls alike) to drain, so no detached sender thread is still
-    // running this DLL's code when Windhawk unloads it. A send's bounded worst
-    // case is the open latency plus the RELAY_REPLY_TIMEOUT_MS read; 5 s is
-    // headroom over that, not a guess.
-    for (int i = 0; i < 500 && g_RelaySendsInFlight.load() > 0; ++i) Sleep(10);
-
-    // Same discipline for the clipboard-restart one-shot. Its bounded worst
-    // case is the terminate wait plus the settle (~2.3 s) plus a CreateProcess,
-    // so 5 s of drain is headroom rather than a guess.
-    for (int i = 0; i < 500 && g_ClipboardRestartsInFlight.load() > 0; ++i) Sleep(10);
 
     Wh_Log(L"RDP Session Toolkit Taskbar Host uninitialized");
 }
@@ -2214,7 +2509,7 @@ void Wh_ModSettingsChanged() {
                 g_Settings.widgetPosition == WidgetPosition::Left   ? HorizontalAlignment::Left   :
                 g_Settings.widgetPosition == WidgetPosition::Center ? HorizontalAlignment::Center :
                                                                       HorizontalAlignment::Right;
-            widget.Dispatcher().RunAsync(
+            g_Dispatch.Post(widget,
                 Windows::UI::Core::CoreDispatcherPriority::Normal,
                 [weak, w, fs, ha]() {
                     auto g = weak.get();

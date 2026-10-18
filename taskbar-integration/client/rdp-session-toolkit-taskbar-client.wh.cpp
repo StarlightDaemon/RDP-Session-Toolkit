@@ -2,7 +2,7 @@
 // @id              rdp-session-toolkit-taskbar-client
 // @name            RDP Session Toolkit — Taskbar Client
 // @description     A taskbar companion for Remote Desktop sessions: a panel in your own taskbar with buttons for minimize, restore, switching between fullscreen and windowed, reconnecting, and disconnecting, plus a status line whose tooltip shows this PC's idle time, connection quality, and a warning if the session stops responding. Also removes the floating connection bar that Windows shows during fullscreen sessions.
-// @version         0.10.0
+// @version         0.11.1
 // @author          StarlightDaemon
 // @github          https://github.com/StarlightDaemon
 // @include         mstsc.exe
@@ -57,9 +57,8 @@ There are **two presentation surfaces**, and they are independent:
 2. the **floating overlay button** on the RDP monitor (`mstsc.exe`), off by
    default.
 
-To use only the taskbar-embedded panel, simply leave *Show floating overlay
-button* off (and keep *Detect stuck sessions* on, so the status snapshot keeps
-being written — see that setting).
+To use only the taskbar-embedded panel, leave *Show floating overlay button*
+off. Status updates independently of the overlay and watchdog.
 
 > **Changed in v0.9.0.** A third surface, the **taskbar thumbnail toolbar**
 > (buttons under the mstsc taskbar hover preview), has been removed. The
@@ -142,16 +141,18 @@ reconnect, forced or clean, starts with your click.
 
 ## Toolkit relay receiver
 
-The mod also creates a hidden message-only window (class
-`CitadelRdpTaskbarRelay`) at load. The RDP Session Toolkit's DVC relay plugin
-sends it `WM_COPYDATA` commands. The first payload byte is the command;
-Minimize (0x01) and Fullscreen toggle (0x02) are implemented — both routed to
-the same shared action functions every local surface uses. Senders are
-validated: only this mod's
-own process (the local self-test) or the registered DVC relay plugin's exact
-EXE are accepted; anything else is logged and ignored. The "Debug: send test
-minimize via relay" setting exercises the receiver locally without any other
-toolkit component installed.
+The relay and local panel use target-bound protocol v3 commands. A target is
+identified by both PID and process creation time. Multiple mstsc processes in
+this Windows session, including connection dialogs, pause cross-process controls.
+Both sender and receiver validate the target; legacy commands are refused.
+The relay keeps its registered executable-path sender guard. The local panel
+also requires its shared secret. These are personal-use guards, not isolation
+from hostile processes running as the same user.
+
+The panel reports acceptance, rejection, unavailable/ambiguous peers, timeout,
+and observed window-state changes. Reconnect/disconnect acceptance does not
+claim a replacement session has connected. Unknown outcomes are never retried.
+Use matching client 0.11.1, host 0.5.1 and relay 0.3.1 candidate components.
 
 ## Taskbar-embedded widget channel
 
@@ -160,7 +161,7 @@ serves the taskbar-embedded panel — this same mod's `explorer.exe` branch,
 running in this machine's own Explorer. Once a second this mod also writes a
 small status snapshot —
 session active, this PC's idle time, connection quality, stuck
-state, minimized / fullscreen — to `local-widget-status.dat` in its Windhawk
+state, minimized / fullscreen — to `local-widget-status-v3.dat` in its Windhawk
 mod storage folder, which the widget reads and treats as stale after a few
 seconds without a fresh write. Widget commands (minimize, restore, fullscreen
 toggle, reconnect, disconnect) must carry a 32-byte shared secret stored as
@@ -311,7 +312,7 @@ configured default.
   $description: Remote desktop height for windowed reconnects. 0 = reuse the current session window's size at the moment you reconnect.
 - stuckDetection: true
   $name: Detect stuck sessions
-  $description: Watches the session window for a hang. Once it has stopped responding for the threshold below, a small alert appears on the session's own monitor and the taskbar-embedded panel shows a not-responding line. With Enable Reconnect on, the alert offers Force reconnect (which ends the stuck client and reopens the connection using the reconnect display mode); with it off, the alert offers Dismiss only. Never reconnects on its own — it always waits for your click. Keep this on if you turn the floating overlay off, since the watchdog also keeps the status snapshot flowing to the panel.
+  $description: Watches the session window for a hang. Once it has stopped responding for the threshold below, a small alert appears on the session's own monitor and the taskbar-embedded panel shows a not-responding line. With Enable Reconnect on, the alert offers Force reconnect (which ends the stuck client and reopens the connection using the reconnect display mode); with it off, the alert offers Dismiss only. Never reconnects on its own — it always waits for your click. The panel status updates independently of this setting.
 - stuckThresholdSeconds: 10
   $name: Stuck threshold (seconds)
   $description: How many consecutive seconds the session window must be reported as not responding before the alert appears. Windows itself only reports a window as not responding after about 5 seconds, so the alert appears roughly that much later than this value.
@@ -396,6 +397,369 @@ configured default.
         Wh_Log(L"[" ctx L"] unknown exception");                               \
     }
 
+// BEGIN TOOLKIT RUNTIME CONTRACT
+// Mirrored verbatim into the standalone Windhawk sources. The runtime tests
+// enforce equality; users can still install either mod by pasting one file.
+#include <windows.h>
+#include <tlhelp32.h>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <thread>
+
+namespace rdpstk {
+enum class Result : DWORD {
+    Unknown, Accepted, Observed, NoReceiver, Ambiguous, TargetChanged,
+    Unavailable, Rejected, TimedOut, Unsupported, Busy
+};
+inline PCWSTR ResultText(Result r) {
+    switch (r) {
+    case Result::Accepted: return L"Accepted; awaiting state";
+    case Result::Observed: return L"Requested window state observed";
+    case Result::NoReceiver: return L"Client mod unavailable";
+    case Result::Ambiguous: return L"Multiple Remote Desktop clients; controls paused";
+    case Result::TargetChanged: return L"Client changed; refresh before trying again";
+    case Result::Unavailable: return L"Client state unavailable";
+    case Result::Rejected: return L"Command rejected";
+    case Result::TimedOut: return L"Timed out; outcome unknown";
+    case Result::Unsupported: return L"Component upgrade required";
+    case Result::Busy: return L"Another action is in progress";
+    default: return L"Outcome unknown";
+    }
+}
+inline bool ValidResult(DWORD value) { return value <= (DWORD)Result::Busy; }
+inline Result CommandReply(DWORD_PTR value) {
+    // Zero can mean an uncertain action or an unhandled message; neither is
+    // proof of rejection. Preserve uncertainty without ever claiming success.
+    return value <= (DWORD)Result::Busy ? (Result)value : Result::Unsupported;
+}
+inline ULONGLONG FileTimeValue(FILETIME t) {
+    return ((ULONGLONG)t.dwHighDateTime << 32) | t.dwLowDateTime;
+}
+inline bool ProcessBirth(DWORD pid, ULONGLONG* birth) {
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+    if (!p) return false;
+    FILETIME created{}, exit{}, kernel{}, user{};
+    bool ok = WaitForSingleObject(p, 0) == WAIT_TIMEOUT &&
+              GetProcessTimes(p, &created, &exit, &kernel, &user);
+    if (ok) *birth = FileTimeValue(created);
+    CloseHandle(p);
+    return ok;
+}
+struct Target {
+    Result result = Result::Unavailable;
+    HWND window = nullptr;
+    DWORD pid = 0;
+    ULONGLONG birth = 0;
+};
+struct FrameScan { bool complete = false; unsigned count = 0; HWND window = nullptr; };
+inline FrameScan ScanFrames(DWORD targetPid) {
+    struct Context { DWORD pid; FrameScan frames; } context{targetPid, {}};
+    context.frames.complete = EnumWindows([](HWND window, LPARAM data) -> BOOL {
+        auto& context = *reinterpret_cast<Context*>(data);
+        DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
+        if (pid == context.pid) {
+            wchar_t cls[64]{};
+            if (!GetClassNameW(window, cls, ARRAYSIZE(cls))) return FALSE;
+            if (_wcsicmp(cls, L"TscShellContainerClass") == 0) {
+                ++context.frames.count; context.frames.window = window;
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&context)) != FALSE;
+    return context.frames;
+}
+// Count every mstsc in this Windows session, including unmodified connection
+// dialogs. This intentionally favors a conservative refusal over guessing.
+// processName is injectable only for isolated fixture-process tests.
+inline Target FindTarget(PCWSTR windowClass, DWORD expectedPid = 0,
+                         ULONGLONG expectedBirth = 0,
+                         PCWSTR processName = L"mstsc.exe") {
+    Target t;
+    DWORD session = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &session)) return t;
+    HANDLE scan = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (scan == INVALID_HANDLE_VALUE) return t;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    BOOL more = Process32FirstW(scan, &entry);
+    unsigned count = 0;
+    bool uncertain = !more;
+    while (more) {
+        if (_wcsicmp(entry.szExeFile, processName) == 0) {
+            DWORD candidateSession = 0;
+            if (!ProcessIdToSessionId(entry.th32ProcessID, &candidateSession)) uncertain = true;
+            else if (candidateSession == session) { ++count; t.pid = entry.th32ProcessID; }
+        }
+        more = Process32NextW(scan, &entry);
+    }
+    if (GetLastError() != ERROR_NO_MORE_FILES) uncertain = true;
+    CloseHandle(scan);
+    if (count > 1) { t.result = Result::Ambiguous; return t; }
+    if (uncertain) return t;
+    if (!count) { t.result = Result::NoReceiver; return t; }
+    if (!ProcessBirth(t.pid, &t.birth)) return t;
+    if ((expectedPid && expectedPid != t.pid) ||
+        (expectedBirth && expectedBirth != t.birth)) {
+        t.result = Result::TargetChanged;
+        return t;
+    }
+    // PID uniqueness alone does not identify a frame when a client hosts more
+    // than one top-level RDP window. Do not let cached frame selection guess.
+    auto frames = ScanFrames(t.pid);
+    if (!frames.complete) return t;
+    if (frames.count > 1) { t.result = Result::Ambiguous; return t; }
+    unsigned receivers = 0;
+    HWND w = nullptr;
+    while ((w = FindWindowExW(HWND_MESSAGE, w, windowClass, nullptr))) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(w, &pid);
+        // Any extra receiver on this desktop is ambiguous, even a foreign one.
+        if (++receivers > 1 || pid != t.pid) { t.result = Result::Ambiguous; return t; }
+        t.window = w;
+    }
+    t.result = t.window ? Result::Observed : Result::NoReceiver;
+    return t;
+}
+inline bool Fresh(ULONGLONG tick, ULONGLONG now, ULONGLONG limit = 4000) {
+    return tick <= now && now - tick <= limit;
+}
+
+constexpr DWORD kBoundMagic = 0x33435452; // 'RTC3'; low byte is never a legacy command
+constexpr DWORD kProtocol = 3;
+constexpr DWORD kCapabilities = 3; // bound targets + explicit results
+constexpr BYTE kRequestMarker = 0x7F; // old relays forward an unknown, harmless command
+constexpr DWORD kReplyMagic = 0x33525352; // distinct from the v1 status reply
+#pragma pack(push, 1)
+struct BoundCommand {
+    DWORD magic = kBoundMagic;
+    DWORD version = kProtocol;
+    DWORD targetPid = 0;
+    ULONGLONG targetBirth = 0;
+    ULONGLONG requestId = 0;
+    BYTE command = 0;
+};
+struct Request {
+    BYTE marker = kRequestMarker;
+    BYTE command = 0;
+    WORD size = sizeof(Request);
+    DWORD magic = kBoundMagic;
+    DWORD version = kProtocol;
+    ULONGLONG requestId = 0;
+    DWORD targetPid = 0;
+    ULONGLONG targetBirth = 0;
+};
+struct Reply {
+    DWORD magic = kReplyMagic;
+    DWORD version = kProtocol;
+    ULONGLONG requestId = 0;
+    DWORD capabilities = kCapabilities;
+    DWORD result = (DWORD)Result::Unknown;
+    DWORD targetPid = 0;
+    ULONGLONG targetBirth = 0;
+    ULONGLONG snapshotTick = 0;
+    BYTE command = 0;
+    BYTE known = 0;
+    BYTE active = 0;
+    BYTE fullscreen = 0;
+    BYTE iconic = 0;
+};
+#pragma pack(pop)
+static_assert(sizeof(Request) == 32 && sizeof(BoundCommand) == 29 && sizeof(Reply) == 49,
+              "Wire contract drift");
+inline bool ValidRequest(const Request& r) {
+    return r.marker == kRequestMarker && r.size == sizeof(r) &&
+           r.magic == kBoundMagic && r.version == kProtocol && r.requestId &&
+           r.command >= 1 && r.command <= 3 &&
+           (r.command == 3 || (r.targetPid && r.targetBirth));
+}
+inline bool ValidReply(const Reply& r, const Request& q) {
+    return r.magic == kReplyMagic && r.version == kProtocol &&
+           (r.capabilities & kCapabilities) == kCapabilities &&
+           r.requestId == q.requestId && r.command == q.command &&
+           ValidResult(r.result) && r.known <= 1 && r.active <= 1 &&
+           r.fullscreen <= 1 && r.iconic <= 1 &&
+           (r.known || (!r.active && !r.fullscreen && !r.iconic)) &&
+           (!r.known || r.result == (DWORD)Result::Observed || r.result == (DWORD)Result::Accepted) &&
+           (!r.known || (r.targetPid && r.targetBirth && r.snapshotTick)) &&
+           ((r.result != (DWORD)Result::Accepted && r.result != (DWORD)Result::Observed) ||
+            (r.known && (q.command == 3 || r.active))) &&
+           (q.command == 3 || !r.known ||
+            (r.targetPid == q.targetPid && r.targetBirth == q.targetBirth));
+}
+inline bool ParseReply(const BYTE* bytes, DWORD length, const Request& request, Reply* out) {
+    if (!bytes || !out) return false;
+    for (DWORD offset : {0ul, 8ul}) {
+        if (length != offset + sizeof(Reply)) continue;
+        if (offset) {
+            DWORD size = 0, flags = 0;
+            memcpy(&size, bytes, sizeof(size)); memcpy(&flags, bytes + 4, sizeof(flags));
+            // A v3 reply fits in a single DVC chunk. Ignore unrelated flag bits,
+            // but require both FIRST and LAST and the exact declared length.
+            if (size != sizeof(Reply) || (flags & 3) != 3) continue;
+        }
+        Reply reply;
+        memcpy(&reply, bytes + offset, sizeof(reply));
+        if (ValidReply(reply, request)) { *out = reply; return true; }
+    }
+    return false;
+}
+// command uses the local control numbering (1 minimize, 2 restore, 3 fullscreen).
+// The caller must establish identity and sample ordering before using this test.
+inline bool WindowOutcome(BYTE command, bool wasFullscreen, bool fullscreen, bool iconic) {
+    return (command == 1 && iconic) || (command == 2 && !iconic) ||
+           (command == 3 && fullscreen != wasFullscreen);
+}
+template<class Snapshot> inline bool ValidSnapshotState(const Snapshot& s) {
+    auto boolean = [](BOOL value) { return value == FALSE || value == TRUE; };
+    return s.writerPid && s.writerBirth && s.writeTick && boolean(s.sessionActive) &&
+        boolean(s.qualityAvailable) && boolean(s.hung) && boolean(s.iconic) && boolean(s.fullscreen) &&
+        (s.sessionActive || (!s.iconic && !s.fullscreen));
+}
+inline bool PublishRecord(PCWSTR path, const void* data, DWORD size) {
+    try {
+        static std::atomic<ULONGLONG> sequence{0};
+        std::wstring temporary = std::wstring(path) + L"." + std::to_wstring(GetCurrentProcessId()) +
+            L"." + std::to_wstring(GetCurrentThreadId()) + L"." +
+            std::to_wstring(sequence.fetch_add(1) + 1) + L".tmp";
+        HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        DWORD written = 0;
+        BOOL ok = WriteFile(file, data, size, &written, nullptr);
+        CloseHandle(file);
+        // Publish a closed, complete record on the same volume. Readers allow
+        // FILE_SHARE_DELETE and therefore keep an immutable old or new handle.
+        if (ok && written == size && MoveFileExW(temporary.c_str(), path, MOVEFILE_REPLACE_EXISTING)) return true;
+        DeleteFileW(temporary.c_str());
+    } catch (...) {}
+    return false;
+}
+
+// One owned worker and a bounded queue. Stop rejects future jobs, discards
+// queued jobs and joins the active job before DLL unload. No detached work.
+class WorkQueue {
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<std::function<void()>> jobs_;
+    std::thread thread_;
+    bool stopping_ = true;
+public:
+    bool Start() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (thread_.joinable()) return false;
+        stopping_ = false;
+        try {
+            thread_ = std::thread([this] {
+                for (;;) {
+                    std::function<void()> job;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex_);
+                        wake_.wait(lock, [this] { return stopping_ || !jobs_.empty(); });
+                        if (stopping_) return;
+                        job = std::move(jobs_.front()); jobs_.pop_front();
+                    }
+                    try { job(); } catch (...) { /* job-specific feedback belongs to its caller */ }
+                }
+            });
+        } catch (...) { stopping_ = true; return false; }
+        return true;
+    }
+    bool Post(std::function<void()> job) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_ || jobs_.size() >= 4) return false;
+        try { jobs_.push_back(std::move(job)); } catch (...) { return false; }
+        wake_.notify_one(); return true;
+    }
+    void Stop() {
+        { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; jobs_.clear(); }
+        wake_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+    ~WorkQueue() { Stop(); }
+};
+} // namespace rdpstk
+// END TOOLKIT RUNTIME CONTRACT
+
+// BEGIN TRACKED TASKBAR DISPATCH
+// Own every queued delegate until completion. A timeout is not proof that a
+// callback has stopped using this DLL. Windhawk unload runs off the XAML thread.
+class TrackedDispatch {
+    std::mutex mutex_;
+    std::atomic<bool> stopping_{false};
+    struct Entry {
+        winrt::Windows::Foundation::IAsyncAction action{nullptr};
+        winrt::Windows::UI::Core::CoreDispatcher dispatcher{nullptr};
+    };
+    std::vector<Entry> actions_;
+    void Queue(winrt::Windows::UI::Xaml::FrameworkElement const& element,
+               winrt::Windows::UI::Core::CoreDispatcherPriority priority,
+               winrt::Windows::UI::Core::DispatchedHandler const& callback, bool cleanup) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_ && !cleanup) return;
+        actions_.erase(std::remove_if(actions_.begin(), actions_.end(), [](auto const& action) {
+            return action.action.Status() != winrt::Windows::Foundation::AsyncStatus::Started;
+        }), actions_.end());
+        // Bound retained delegates while an Explorer dispatcher is stalled. All
+        // callers already catch dispatch errors (including scan-latch reset).
+        if (!cleanup && actions_.size() >= 128) winrt::throw_hresult(E_OUTOFMEMORY);
+        // Reserve BEFORE queueing: allocation failure must not orphan a delegate.
+        actions_.reserve(actions_.size() + 1);
+        auto dispatcher = element.Dispatcher();
+        actions_.push_back({dispatcher.RunAsync(priority, [this, callback, cleanup] {
+            if (cleanup || !stopping_.load()) callback();
+        }), dispatcher});
+    }
+public:
+    void Post(winrt::Windows::UI::Xaml::FrameworkElement const& element,
+              winrt::Windows::UI::Core::CoreDispatcherPriority priority,
+              winrt::Windows::UI::Core::DispatchedHandler const& callback) {
+        Queue(element, priority, callback, false);
+    }
+    void PostCleanup(winrt::Windows::UI::Xaml::FrameworkElement const& element,
+                     winrt::Windows::UI::Core::CoreDispatcherPriority priority,
+                     winrt::Windows::UI::Core::DispatchedHandler const& callback) {
+        try { Queue(element, priority, callback, true); }
+        catch (...) { RetainCode(); } // live XAML handlers may still own this code
+    }
+    void Drain() {
+        std::vector<Entry> pending;
+        { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; pending.swap(actions_); }
+        ULONGLONG deadline = GetTickCount64() + 2000;
+        bool pinned = false;
+        for (auto const& entry : pending) {
+            try {
+                auto started = winrt::Windows::Foundation::AsyncStatus::Started;
+                bool retained = false;
+                while (entry.action.Status() == started) {
+                    if (entry.dispatcher.HasThreadAccess() || GetTickCount64() >= deadline) {
+                        if (!pinned) { RetainCode(); pinned = true; }
+                        retained = true; break;
+                    }
+                    Sleep(10);
+                }
+                if (!retained) entry.action.GetResults();
+            } catch (...) { if (!pinned) { RetainCode(); pinned = true; } }
+        }
+    }
+
+public:
+    static void PinAddress() {}
+    static void RetainCode() {
+        HMODULE pinned = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                reinterpret_cast<PCWSTR>(&PinAddress), &pinned)) {
+            // Without a module reference we cannot safely return from unload.
+            for (;;) Sleep(1000);
+        }
+        Wh_Log(L"Taskbar callback completion unavailable; code retained until Explorer exits");
+    }
+};
+// END TRACKED TASKBAR DISPATCH
+
 namespace {
 
 // ── Host-process detection (which of our two @include targets are we in?) ──
@@ -448,7 +812,7 @@ constexpr PCWSTR LOCAL_WIDGET_REG_STORAGE_VALUE = L"ClientModStoragePath";
 constexpr PCWSTR LOCAL_WIDGET_SECRET_MUTEX = L"Local\\RDPSessionToolkit.LocalWidgetSecret";
 constexpr DWORD  LOCAL_WIDGET_SECRET_BYTES = 32;
 constexpr DWORD  kLocalWidgetCmdMagic      = 0x434C5752;  // 'RWLC'
-constexpr DWORD  kLocalWidgetCmdVersion    = 1;
+constexpr DWORD  kLocalWidgetCmdVersion    = 3;
 
 enum LocalWidgetCommand : BYTE {
     LWCMD_MINIMIZE          = 0x01,
@@ -468,15 +832,18 @@ struct LocalWidgetCommandPayload {
     BYTE  command;
     BYTE  reserved[3];
     BYTE  secret[LOCAL_WIDGET_SECRET_BYTES];
+    DWORD targetPid;
+    ULONGLONG targetBirth;
+    ULONGLONG requestId;
 };
 #pragma pack(pop)
 
 // Status snapshot the mstsc branch writes ~1/s and the explorer branch reads.
-// Version 2: sessionDurationMs removed outright (the session-duration display
-// was removed from every surface — a real removal, not an always-zero field).
+// Version 3 adds process creation time and uses a separate filename so older
+// readers cannot act from a last-writer snapshot during an ambiguous session.
 constexpr DWORD  kLocalWidgetStatusMagic    = 0x53545352;  // 'RSTS'
-constexpr DWORD  kLocalWidgetStatusVersion  = 2;
-constexpr PCWSTR kLocalWidgetStatusFileName = L"local-widget-status.dat";
+constexpr DWORD  kLocalWidgetStatusVersion  = 3;
+constexpr PCWSTR kLocalWidgetStatusFileName = L"local-widget-status-v3.dat";
 
 // Status record layout is a contract between the two branches (and, read-only,
 // the DVC relay plugin — see dvc-plugin/relay/common/RelayIds.h, which keeps
@@ -499,6 +866,7 @@ struct LocalWidgetStatus {
     BOOL      fullscreen;
     ULONGLONG writeTick;          // GetTickCount64 at write — a system-wide clock
     wchar_t   hostname[64];
+    ULONGLONG writerBirth;
 };
 #pragma pack(pop)
 
@@ -506,7 +874,7 @@ struct LocalWidgetStatus {
 // (dvc-plugin/relay/common/RelayIds.h asserts the same number): a drifted
 // copy fails to build on whichever side changed instead of silently
 // misreading the file.
-static_assert(sizeof(LocalWidgetStatus) == 192,
+static_assert(sizeof(LocalWidgetStatus) == 200,
               "LocalWidgetStatus layout changed — bump kLocalWidgetStatusVersion "
               "and update the relay plugin's RelayClientStatus mirror");
 
@@ -718,6 +1086,8 @@ void FormatClock(ULONGLONG ms, wchar_t* out, size_t cch) {
 // Everything from here to the end of `namespace client` runs only when this
 // mod is injected into mstsc.exe (see DetectHostProcess / Wh_ModInit).
 namespace client {
+std::atomic<bool> g_clientStopping{false};
+HANDLE g_forceThread = nullptr;
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -863,6 +1233,16 @@ void LoadSettings() {
 // ── Shared state ──────────────────────────────────────────────────────────
 
 CRITICAL_SECTION          g_cs;
+std::atomic<unsigned>     g_SubclassCalls{0};
+struct SubclassCall {
+    SubclassCall() { ++g_SubclassCalls; }
+    ~SubclassCall() { --g_SubclassCalls; }
+};
+bool DrainSubclassCalls(ULONGLONG limitMs = 2000) {
+    ULONGLONG deadline = GetTickCount64() + limitMs;
+    while (g_SubclassCalls.load() && GetTickCount64() < deadline) Sleep(10);
+    return g_SubclassCalls.load() == 0;
+}
 HWND                      g_hBBar           = nullptr;
 HWND                      g_hRdpFrame       = nullptr;
 WNDPROC                   g_origBBarWndProc = nullptr;
@@ -1093,19 +1473,13 @@ void ClearPendingReconnect();  // reconnect helper, below
 // keepPendingReconnect is true only for the reconnect helper's own close;
 // every plain Disconnect (overlay, panel, hotkey) drops any parked
 // reconnect plan so a later ordinary close can never relaunch by surprise.
-void DisconnectSession(HWND hRef, bool keepPendingReconnect = false) {
+HWND GetRdpFrameForAction();
+bool DisconnectSession(HWND /*hRef*/, bool keepPendingReconnect = false) {
     if (!keepPendingReconnect)
         ClearPendingReconnect();
-    EnterCriticalSection(&g_cs);
-    HWND hFrame = g_hRdpFrame;
-    LeaveCriticalSection(&g_cs);
-    if (!hFrame || !IsWindow(hFrame))
-        hFrame = GetAncestor(hRef, GA_ROOT);
-    if (!hFrame || !IsWindow(hFrame))
-        hFrame = FindWindowW(L"TscShellContainerClass", nullptr);
+    HWND hFrame = GetRdpFrameForAction();
     Wh_Log(L"Disconnect: WM_CLOSE → %p", hFrame);
-    if (hFrame)
-        PostMessageW(hFrame, WM_CLOSE, 0, 0);
+    return hFrame && PostMessageW(hFrame, WM_CLOSE, 0, 0);
 }
 
 // ── Minimize / Restore ────────────────────────────────────────────────────
@@ -1117,9 +1491,13 @@ HWND GetRdpFrameForAction() {
     EnterCriticalSection(&g_cs);
     HWND hFrame = g_hRdpFrame;
     LeaveCriticalSection(&g_cs);
-    if (!hFrame || !IsWindow(hFrame))
-        hFrame = FindWindowW(L"TscShellContainerClass", nullptr);
-    return hFrame;
+    DWORD pid = 0;
+    if (hFrame && IsWindow(hFrame)) GetWindowThreadProcessId(hFrame, &pid);
+    wchar_t cls[64]{};
+    if (pid == GetCurrentProcessId() && GetClassNameW(hFrame, cls, ARRAYSIZE(cls)) &&
+        _wcsicmp(cls, L"TscShellContainerClass") == 0) return hFrame;
+    auto frames = rdpstk::ScanFrames(GetCurrentProcessId());
+    return frames.complete && frames.count == 1 ? frames.window : nullptr;
 }
 
 // Live minimize-state query. No hook tracks this: a taskbar-initiated
@@ -1408,6 +1786,7 @@ void ClearPendingReconnect() {
 // Frame WM_DESTROY hook point: the session really closed — launch the parked
 // plan, if it is still fresh.
 void LaunchPendingReconnect() {
+    if (g_clientStopping.load()) return;
     ReconnectPlan plan;
     EnterCriticalSection(&g_cs);
     plan = g_pendingReconnect;
@@ -1423,14 +1802,16 @@ void LaunchPendingReconnect() {
 }
 
 // Clean trigger: capture, park, close via the established disconnect path.
-void ReconnectSessionClean(HWND hRef, PCWSTR source) {
+bool ReconnectSessionClean(HWND hRef, PCWSTR source) {
     ReconnectPlan plan;
     if (!BuildReconnectPlan(&plan, source))
-        return;
+        return false;
     SetPendingReconnect(plan);
     Wh_Log(L"%s — plan parked, closing session (relaunch fires from WM_DESTROY)",
         source);
-    DisconnectSession(hRef, /*keepPendingReconnect=*/true);
+    if (DisconnectSession(hRef, /*keepPendingReconnect=*/true)) return true;
+    ClearPendingReconnect();
+    return false;
 }
 
 // ── Local idle ────────────────────────────────────────────────────────────
@@ -1665,7 +2046,11 @@ bool BringFrameToForeground(HWND hFrame) {
 // Ctrl down, Alt down, Break down/up, Alt up, Ctrl up. Break is the
 // extended-key form of scan code 0x46 (what the keyboard sends for
 // Ctrl+Pause), reported to apps as VK_CANCEL.
-void SendCtrlAltBreakChord() {
+rdpstk::Result SendCtrlAltBreakChord() {
+    // Never release a modifier the user was already holding. Refuse while
+    // modifiers are down, before injecting any part of the shortcut.
+    for (int vk : {VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN})
+        if (GetAsyncKeyState(vk) & 0x8000) return rdpstk::Result::Rejected;
     INPUT in[6] = {};
     auto key = [&in](int i, WORD vk, bool up, bool extended) {
         in[i].type       = INPUT_KEYBOARD;
@@ -1684,13 +2069,30 @@ void SendCtrlAltBreakChord() {
     if (sent != 6)
         Wh_Log(L"Fullscreen toggle: SendInput sent %u/6 events, GLE=%d",
             sent, GetLastError());
+    if (sent == 6) return rdpstk::Result::Accepted;
+    if (sent) {
+        // A partial insertion can leave Ctrl/Alt/Break down. Release only the
+        // keys introduced by the prefix that Windows accepted. Never retry a toggle.
+        INPUT release[3]{}; UINT n = 0;
+        for (auto pair : {std::pair<WORD, UINT>{VK_CANCEL, 3}, {VK_MENU, 2}, {VK_CONTROL, 1}}) {
+            if (sent >= pair.second) {
+                release[n].type = INPUT_KEYBOARD; release[n].ki.wVk = pair.first;
+                release[n].ki.dwFlags = KEYEVENTF_KEYUP | (pair.first == VK_CANCEL ? KEYEVENTF_EXTENDEDKEY : 0);
+                ++n;
+            }
+        }
+        if (SendInput(n, release, sizeof(INPUT)) != n)
+            Wh_Log(L"Fullscreen toggle: modifier cleanup incomplete");
+        return rdpstk::Result::Unknown;
+    }
+    return rdpstk::Result::Rejected;
 }
 
-void ToggleFullscreen(PCWSTR source) {
+rdpstk::Result ToggleFullscreen(PCWSTR source) {
     HWND hFrame = GetRdpFrameForAction();
     if (!hFrame) {
         Wh_Log(L"%s — no RDP frame, ignored", source);
-        return;
+        return rdpstk::Result::Rejected;
     }
     if (IsIconic(hFrame))
         (pOrigShowWindow ? pOrigShowWindow : ShowWindow)(hFrame, SW_RESTORE);
@@ -1699,13 +2101,13 @@ void ToggleFullscreen(PCWSTR source) {
     if (!BringFrameToForeground(hFrame)) {
         Wh_Log(L"%s — foreground not acquired (foreground=%p), "
                L"Ctrl+Alt+Break NOT sent", source, GetForegroundWindow());
-        return;
+        return rdpstk::Result::Rejected;
     }
     Wh_Log(L"%s — frame %p is foreground, sending Ctrl+Alt+Break (%s → %s)",
         source, hFrame,
         wasFullscreen ? L"fullscreen" : L"windowed",
         wasFullscreen ? L"windowed"   : L"fullscreen");
-    SendCtrlAltBreakChord();
+    return SendCtrlAltBreakChord();
 }
 
 // ── Taskbar-embedded widget: status file ─────────────────────────────────
@@ -1721,12 +2123,12 @@ void ToggleFullscreen(PCWSTR source) {
 // is more than a few seconds old (DECISIONS.md D-22), so a client that exits
 // uncleanly can never leave a phantom session on the taskbar. Same
 // magic+version+fixed-fields pattern as PersistedButtonPos. Single session
-// only: with two mstsc instances the last writer wins, consistent with how
-// the rest of this toolkit treats that case.
+// only: publication and commands pause while multiple mstsc processes or
+// multiple RDP frames make the target ambiguous.
 //
-// Write discipline: OPEN_ALWAYS and one WriteFile of the whole fixed-size
-// record at offset 0 — never CREATE_ALWAYS — so a reader can never observe a
-// truncated file; the record is either the previous snapshot or this one.
+// Publish a closed temporary file through a same-volume replacement. Readers
+// retain a complete previous/new record; failed replacement leaves the old
+// snapshot in place and its ordinary freshness timeout still applies.
 
 // The status record (LocalWidgetStatus), its magic/version/filename, and
 // GetLocalWidgetStatusFilePath are shared contracts now — defined once above
@@ -1741,6 +2143,7 @@ std::atomic<bool>      g_localWidgetStatusLogged   { false };  // first-write lo
 // so it is safe from the watchdog thread while the frame thread is hung.
 // `force` bypasses the throttle for the one-shot "session gone" record.
 void WriteLocalWidgetStatus(bool force = false) {
+    if (g_clientStopping.load()) return;
     ULONGLONG now  = GetTickCount64();
     ULONGLONG last = g_localWidgetStatusLastTick.load();
     if (!force) {
@@ -1773,6 +2176,9 @@ void WriteLocalWidgetStatus(bool force = false) {
     s.magic             = kLocalWidgetStatusMagic;
     s.version           = kLocalWidgetStatusVersion;
     s.writerPid         = GetCurrentProcessId();
+    if (!rdpstk::ProcessBirth(s.writerPid, &s.writerBirth)) return;
+    if (rdpstk::FindTarget(LOCAL_WIDGET_CLASS, s.writerPid, s.writerBirth).result
+        != rdpstk::Result::Observed) return;
     s.sessionActive     = active ? TRUE : FALSE;
     s.localIdleMs       = GetLocalIdleMs();
     s.quality           = g_netQuality.load();
@@ -1789,20 +2195,9 @@ void WriteLocalWidgetStatus(bool force = false) {
     wchar_t path[MAX_PATH + 40];
     if (!GetLocalWidgetStatusFilePath(path, ARRAYSIZE(path)))
         return;
-    HANDLE hFile = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        if (!g_localWidgetStatusLogged.exchange(true))
-            Wh_Log(L"LocalWidget: status file open failed GLE=%d (%s)",
-                GetLastError(), path);
-        return;
-    }
-    DWORD written = 0;
-    BOOL ok = WriteFile(hFile, &s, sizeof(s), &written, nullptr);
-    CloseHandle(hFile);
+    BOOL ok = rdpstk::PublishRecord(path, &s, sizeof(s));
     if (!g_localWidgetStatusLogged.exchange(true))
-        Wh_Log(L"LocalWidget: status snapshots → %s (ok=%d, %u bytes)",
-            path, (int)(ok && written == sizeof(s)), written);
+        Wh_Log(L"LocalWidget: atomic status snapshots -> %s (ok=%d, %u bytes)", path, ok, (unsigned)sizeof(s));
 }
 
 void DeleteLocalWidgetStatusFile() {
@@ -1834,6 +2229,7 @@ void DeleteLocalWidgetStatusFile() {
 void UnadviseRdpEvents(PCWSTR reason);
 
 LRESULT CALLBACK FrameSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    SubclassCall call;
     WNDPROC origProc;
     EnterCriticalSection(&g_cs);
     origProc = g_origFrameWndProc;
@@ -1871,6 +2267,7 @@ LRESULT CALLBACK FrameSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 // ── BBar subclass — cleanup only ─────────────────────────────────────────
 
 LRESULT CALLBACK BBarSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    SubclassCall call;
     WNDPROC origProc;
     EnterCriticalSection(&g_cs);
     origProc = g_origBBarWndProc;
@@ -2417,10 +2814,11 @@ void StartHelperThread() {
         g_hHelperThreadReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     else
         ResetEvent(g_hHelperThreadReady);
+    if (!g_hHelperThreadReady) { Wh_Log(L"Thread readiness event creation failed"); return; }
     DWORD threadId = 0;
     g_hHelperThread = CreateThread(
         nullptr, 0, HelperThread, nullptr, 0, &threadId);
-    g_helperThreadId.store(threadId);
+    g_helperThreadId.store(g_hHelperThread ? threadId : 0);
 }
 
 void StopHelperThread() {
@@ -2441,7 +2839,7 @@ void StopHelperThread() {
         PostThreadMessageW(threadId, WM_QUIT, 0, 0);
     }
     if (g_hHelperThread) {
-        WaitForSingleObject(g_hHelperThread, 3000);
+        WaitForSingleObject(g_hHelperThread, INFINITE);
         CloseHandle(g_hHelperThread);
         g_hHelperThread = nullptr;
         g_helperThreadId.store(0);
@@ -2481,7 +2879,6 @@ constexpr UINT  WATCHDOG_POLL_MS  = 1000;
 constexpr DWORD FORCE_GRACE_MS    = 3000;
 
 std::atomic<bool> g_forceReconnectInFlight { false };
-std::atomic<int>  g_oneShotThreads { 0 };   // drained by Wh_ModUninit
 
 // Watchdog-thread-only, like g_hBtn on the helper thread.
 HWND               g_hAlertWnd          = nullptr;
@@ -2509,6 +2906,12 @@ DWORD WINAPI ForceReconnectThread(LPVOID param) {
     for (DWORD waited = 0; waited < FORCE_GRACE_MS && !closed; waited += 100) {
         Sleep(100);
         closed = !IsWindow(ctx->hFrame);
+        if (g_clientStopping.load()) {
+            ClearPendingReconnect();
+            delete ctx;
+            g_forceReconnectInFlight.store(false);
+            return 0;
+        }
     }
 
     if (closed) {
@@ -2516,7 +2919,6 @@ DWORD WINAPI ForceReconnectThread(LPVOID param) {
                L"relaunch handled by the frame's WM_DESTROY");
         delete ctx;
         g_forceReconnectInFlight.store(false);
-        g_oneShotThreads.fetch_sub(1);
         return 0;
     }
 
@@ -2546,10 +2948,12 @@ void ForceReconnectSession(PCWSTR source) {
         Wh_Log(L"%s — Reconnect is disabled (enableReconnect off), ignored", source);
         return;
     }
+    if (g_clientStopping.load()) return;
     if (g_forceReconnectInFlight.exchange(true)) {
         Wh_Log(L"%s — force reconnect already in flight, ignored", source);
         return;
     }
+    if (g_forceThread) { WaitForSingleObject(g_forceThread, INFINITE); CloseHandle(g_forceThread); g_forceThread = nullptr; }
     HWND hFrame = GetRdpFrameForAction();
     if (!hFrame) {
         Wh_Log(L"%s — no RDP frame, ignored", source);
@@ -2563,16 +2967,14 @@ void ForceReconnectSession(PCWSTR source) {
         g_forceReconnectInFlight.store(false);
         return;
     }
-    g_oneShotThreads.fetch_add(1);
     HANDLE h = CreateThread(nullptr, 0, ForceReconnectThread, ctx, 0, nullptr);
     if (!h) {
         Wh_Log(L"%s — CreateThread failed GLE=%d", source, GetLastError());
-        g_oneShotThreads.fetch_sub(1);
         delete ctx;
         g_forceReconnectInFlight.store(false);
         return;
     }
-    CloseHandle(h);
+    g_forceThread = h;
 }
 
 // Top-center of the RDP monitor, DPI-scaled. MonitorFromWindow and
@@ -2825,10 +3227,11 @@ void StartWatchdogThread() {
         g_hWatchdogThreadReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     else
         ResetEvent(g_hWatchdogThreadReady);
+    if (!g_hWatchdogThreadReady) { Wh_Log(L"Thread readiness event creation failed"); return; }
     DWORD threadId = 0;
     g_hWatchdogThread = CreateThread(
         nullptr, 0, WatchdogThread, nullptr, 0, &threadId);
-    g_watchdogThreadId.store(threadId);
+    g_watchdogThreadId.store(g_hWatchdogThread ? threadId : 0);
 }
 
 void StopWatchdogThread() {
@@ -2840,7 +3243,7 @@ void StopWatchdogThread() {
         PostThreadMessageW(threadId, WM_QUIT, 0, 0);
     }
     if (g_hWatchdogThread) {
-        WaitForSingleObject(g_hWatchdogThread, 3000);
+        WaitForSingleObject(g_hWatchdogThread, INFINITE);
         CloseHandle(g_hWatchdogThread);
         g_hWatchdogThread = nullptr;
         g_watchdogThreadId.store(0);
@@ -2890,21 +3293,57 @@ enum RelayCommand : BYTE {
 constexpr auto RELAY_PLUGIN_CLSID =
     L"{6FC96481-9467-496E-BA33-A202ED052F39}";
 
-// Reads the relay plugin's registered LocalServer32 EXE path from HKCU.
-// Returns false (and leaves out[] empty) if the plugin is not registered — in
-// which case no external sender can be authenticated and the receiver fails
-// closed.
+// BEGIN TESTABLE RELAY PATH READER
+// Keep this block self-contained: tests compile these exact functions, while
+// Windhawk still receives one complete source file without private includes.
+bool IsRelayExecutablePath(const wchar_t* path) {
+    const size_t length = wcslen(path);
+    if (length < 7) return false;
+    const bool drive = ((path[0] >= L'A' && path[0] <= L'Z') ||
+                        (path[0] >= L'a' && path[0] <= L'z')) &&
+                       path[1] == L':' && path[2] == L'\\';
+    const bool unc = path[0] == L'\\' && path[1] == L'\\';
+    if (!drive && !unc) return false;
+    for (size_t i = 0; i < length; ++i)
+        if (path[i] < L' ' || path[i] == L'"') return false;
+    return CompareStringOrdinal(path + length - 4, 4, L".exe", 4, TRUE) == CSTR_EQUAL;
+}
+
+// Prefer the raw executable identity. Fall back only when it is absent, never
+// when unreadable/malformed. Legacy defaults may be raw paths or a single
+// quoted path, but we never take the first token of an arbitrary command line.
 bool GetRelayPluginExePath(wchar_t* out, DWORD cch) {
     if (!out || cch == 0) return false;
     out[0] = L'\0';
     wchar_t key[256];
     wsprintfW(key, L"Software\\Classes\\CLSID\\%s\\LocalServer32",
         RELAY_PLUGIN_CLSID);
-    DWORD cb = cch * (DWORD)sizeof(wchar_t);
-    LSTATUS r = RegGetValueW(HKEY_CURRENT_USER, key, nullptr,
-        RRF_RT_REG_SZ, nullptr, out, &cb);
-    return r == ERROR_SUCCESS && out[0] != L'\0';
+    wchar_t value[MAX_PATH + 2] = {};
+    DWORD cb = sizeof(value);
+    LSTATUS r = RegGetValueW(HKEY_CURRENT_USER, key, L"ServerExecutable",
+        RRF_RT_REG_SZ, nullptr, value, &cb);
+    const bool legacy = r == ERROR_FILE_NOT_FOUND || r == ERROR_PATH_NOT_FOUND;
+    if (legacy) {
+        cb = sizeof(value);
+        r = RegGetValueW(HKEY_CURRENT_USER, key, nullptr,
+            RRF_RT_REG_SZ, nullptr, value, &cb);
+    }
+    if (r != ERROR_SUCCESS || cb < sizeof(wchar_t) || cb > sizeof(value) ||
+        cb % sizeof(wchar_t) != 0) return false;
+    const size_t count = cb / sizeof(wchar_t);
+    if (value[count - 1] != L'\0' || wcslen(value) != count - 1) return false;
+    wchar_t* path = value;
+    size_t length = count - 1;
+    if (legacy && length >= 2 && value[0] == L'"' && value[length - 1] == L'"') {
+        value[length - 1] = L'\0';
+        ++path;
+        length -= 2;
+    }
+    if (length >= cch || !IsRelayExecutablePath(path)) return false;
+    memcpy(out, path, (length + 1) * sizeof(wchar_t));
+    return true;
 }
+// END TESTABLE RELAY PATH READER
 
 // Resolves a process's full image path via a limited-rights handle.
 bool GetProcessImagePath(DWORD pid, wchar_t* out, DWORD cch) {
@@ -2925,7 +3364,7 @@ bool GetProcessImagePath(DWORD pid, wchar_t* out, DWORD cch) {
 //      so senderPid == our pid. This keeps the self-test working.
 //   2) The registered DVC relay plugin — a separate process whose full image
 //      path equals the EXE registered as RELAY_PLUGIN_CLSID's HKCU
-//      LocalServer32. That is the exact binary mstsc activates as the relay.
+//      LocalServer32 executable identity (or the supported legacy path).
 // Everything else (unknown pid, unregistered relay, path mismatch) is rejected.
 bool IsAuthorizedRelaySender(DWORD senderPid) {
     if (senderPid == 0)
@@ -2963,10 +3402,43 @@ std::atomic<DWORD> g_relayThreadId { 0 };
 // StartRelayThread/StopRelayThread comments below.
 HANDLE             g_hRelayThreadReady = nullptr;
 
+rdpstk::Result ExecuteClientCommand(BYTE cmd) {
+    using rdpstk::Result;
+    if (g_clientStopping.load()) return Result::Unavailable;
+    HWND frame = GetRdpFrameForAction();
+    if (!frame) return Result::Unavailable;
+    switch (cmd) {
+    case LWCMD_MINIMIZE:
+        if (IsIconic(frame)) return Result::Observed;
+        if (!MinimizeRdpFrame(L"Bound Minimize")) return Result::Rejected;
+        return IsIconic(frame) ? Result::Observed : Result::Accepted;
+    case LWCMD_RESTORE:
+        if (!IsIconic(frame)) return Result::Observed;
+        if (!RestoreRdpFrame(L"Bound Restore")) return Result::Rejected;
+        return !IsIconic(frame) ? Result::Observed : Result::Accepted;
+    case LWCMD_FULLSCREEN_TOGGLE:
+        return ToggleFullscreen(L"Bound Fullscreen");
+    case LWCMD_RECONNECT:
+        return g_enableReconnect && ReconnectSessionClean(frame, L"Bound Reconnect")
+            ? Result::Accepted : Result::Rejected;
+    case LWCMD_DISCONNECT:
+        return DisconnectSession(frame) ? Result::Accepted : Result::Rejected;
+    default: return Result::Unsupported;
+    }
+}
+
+rdpstk::Result CheckBoundTarget(PCWSTR receiverClass, DWORD pid, ULONGLONG birth) {
+    if (!pid || !birth || pid != GetCurrentProcessId()) return rdpstk::Result::TargetChanged;
+    return rdpstk::FindTarget(receiverClass, pid, birth).result;
+}
+
 LRESULT CALLBACK RelayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
 
     case WM_COPYDATA: {
+        // Advisory sender identity check (see DECISIONS.md D-11). WM_COPYDATA's
+        // wParam is caller-selected; this is not authentication against a hostile
+        // same-user process, which is outside this toolkit's trust boundary.
         // Sender validation (see DECISIONS.md D-11; closes the former TODO now
         // that the relay plugin exists with a stable identity). wParam is, by
         // the WM_COPYDATA contract, the sender's window handle; we resolve it
@@ -2985,26 +3457,17 @@ LRESULT CALLBACK RelayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
 
         const COPYDATASTRUCT* cds = reinterpret_cast<const COPYDATASTRUCT*>(lParam);
-        if (!cds || cds->cbData < 1 || !cds->lpData) {
-            Wh_Log(L"Relay: WM_COPYDATA with no payload from pid=%u — ignored",
-                senderPid);
-            return FALSE;
-        }
-
-        const BYTE cmd = *static_cast<const BYTE*>(cds->lpData);
-        Wh_Log(L"Relay: command 0x%02X (%u-byte payload) from pid=%u",
-            cmd, cds->cbData, senderPid);
-
-        switch (cmd) {
-        case RELAY_CMD_MINIMIZE:
-            return MinimizeRdpFrame(L"Relay minimize command") ? TRUE : FALSE;
-        case RELAY_CMD_FULLSCREEN_TOGGLE:
-            ToggleFullscreen(L"Relay fullscreen toggle command");
-            return TRUE;
-        default:
-            Wh_Log(L"Relay: unknown command 0x%02X — ignored", cmd);
-            return FALSE;
-        }
+        if (!cds || cds->cbData != sizeof(rdpstk::BoundCommand) || !cds->lpData)
+            return (LRESULT)rdpstk::Result::Unsupported;
+        rdpstk::BoundCommand request;
+        memcpy(&request, cds->lpData, sizeof(request));
+        if (request.magic != rdpstk::kBoundMagic || request.version != rdpstk::kProtocol ||
+            !request.requestId) return (LRESULT)rdpstk::Result::Unsupported;
+        auto guard = CheckBoundTarget(RELAY_CLASS, request.targetPid, request.targetBirth);
+        if (guard != rdpstk::Result::Observed) return (LRESULT)guard;
+        BYTE cmd = request.command == 1 ? LWCMD_MINIMIZE :
+                   request.command == 2 ? LWCMD_FULLSCREEN_TOGGLE : 0;
+        return (LRESULT)ExecuteClientCommand(cmd);
     }
 
     case WM_DESTROY:
@@ -3062,10 +3525,11 @@ void StartRelayThread() {
         g_hRelayThreadReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     else
         ResetEvent(g_hRelayThreadReady);
+    if (!g_hRelayThreadReady) { Wh_Log(L"Thread readiness event creation failed"); return; }
     DWORD threadId = 0;
     g_hRelayThread = CreateThread(
         nullptr, 0, RelayThread, nullptr, 0, &threadId);
-    g_relayThreadId.store(threadId);
+    g_relayThreadId.store(g_hRelayThread ? threadId : 0);
 }
 
 void StopRelayThread() {
@@ -3080,7 +3544,7 @@ void StopRelayThread() {
         PostThreadMessageW(threadId, WM_QUIT, 0, 0);
     }
     if (g_hRelayThread) {
-        WaitForSingleObject(g_hRelayThread, 3000);
+        WaitForSingleObject(g_hRelayThread, INFINITE);
         CloseHandle(g_hRelayThread);
         g_hRelayThread = nullptr;
         g_relayThreadId.store(0);
@@ -3095,20 +3559,18 @@ void StopRelayThread() {
 // authorizes it as the in-process self-test (see DECISIONS.md D-11). The
 // receiver therefore logs our pid, not 0, for this path.
 void SendRelayTestMinimize() {
-    HWND hRelay = FindWindowExW(HWND_MESSAGE, nullptr, RELAY_CLASS, nullptr);
-    if (!hRelay) {
-        Wh_Log(L"Relay test: relay window not found");
-        return;
+    auto target = rdpstk::FindTarget(RELAY_CLASS);
+    if (target.result != rdpstk::Result::Observed) {
+        Wh_Log(L"Relay test: %s", rdpstk::ResultText(target.result)); return;
     }
-    BYTE cmd = RELAY_CMD_MINIMIZE;
-    COPYDATASTRUCT cds = {};
-    cds.cbData = sizeof(cmd);
-    cds.lpData = &cmd;
-    LRESULT handled = SendMessageW(hRelay, WM_COPYDATA,
-        reinterpret_cast<WPARAM>(hRelay),
-        reinterpret_cast<LPARAM>(&cds));
-    Wh_Log(L"Relay test: minimize command sent to %p, handled=%d",
-        hRelay, (int)handled);
+    rdpstk::BoundCommand request;
+    request.targetPid = target.pid; request.targetBirth = target.birth;
+    request.requestId = GetTickCount64(); request.command = 1;
+    COPYDATASTRUCT data{0, sizeof(request), &request};
+    DWORD_PTR result = 0;
+    SendMessageTimeoutW(target.window, WM_COPYDATA, (WPARAM)g_hRelayWnd,
+        (LPARAM)&data, SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &result);
+    Wh_Log(L"Relay self-test result=%llu", (ULONGLONG)result);
 }
 
 // ── Taskbar-embedded widget: local command receiver ──────────────────────
@@ -3154,7 +3616,7 @@ bool LocalWidgetSecretsEqual(const BYTE* a, const BYTE* b, size_t n) {
 // carries the current shared secret. Every defect fails closed and is logged
 // once per message; the payload is not interpreted before the secret passes.
 bool ValidateLocalWidgetCommand(const COPYDATASTRUCT* cds, DWORD senderPid,
-                                BYTE* cmdOut) {
+                                BYTE* cmdOut, LocalWidgetCommandPayload* payloadOut) {
     if (!cds || !cds->lpData || cds->cbData != sizeof(LocalWidgetCommandPayload)) {
         Wh_Log(L"LocalWidget: malformed payload (%u bytes) from pid=%u — ignored",
             cds ? cds->cbData : 0u, senderPid);
@@ -3181,6 +3643,7 @@ bool ValidateLocalWidgetCommand(const COPYDATASTRUCT* cds, DWORD senderPid,
         return false;
     }
     *cmdOut = p.command;
+    *payloadOut = p;
     return true;
 }
 
@@ -3219,53 +3682,13 @@ LRESULT CALLBACK LocalWidgetWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             GetWindowThreadProcessId(hSender, &senderPid);
 
         BYTE cmd = 0;
-        if (!ValidateLocalWidgetCommand(
-                reinterpret_cast<const COPYDATASTRUCT*>(lParam), senderPid, &cmd))
-            return FALSE;
-        Wh_Log(L"LocalWidget: command 0x%02X from pid=%u", cmd, senderPid);
-
-        // Every case is one of this branch's shared action functions; the
-        // actions check live state themselves and are idempotent, so no
-        // mutual exclusion against the other UI surfaces is needed.
-        switch (cmd) {
-        case LWCMD_MINIMIZE:
-            return MinimizeRdpFrame(L"Local widget Minimize") ? TRUE : FALSE;
-        case LWCMD_RESTORE:
-            return RestoreRdpFrame(L"Local widget Restore") ? TRUE : FALSE;
-        case LWCMD_FULLSCREEN_TOGGLE:
-            ToggleFullscreen(L"Local widget Fullscreen toggle");
-            return TRUE;
-        case LWCMD_RECONNECT: {
-            // The same gate every Reconnect surface uses (D-28): the widget
-            // hides its button on this setting too, but the receiver is the
-            // authority for what actually relaunches.
-            if (!g_enableReconnect) {
-                Wh_Log(L"Local widget Reconnect — Reconnect is disabled "
-                       L"(enableReconnect off), ignored");
-                return FALSE;
-            }
-            HWND hFrame = GetRdpFrameForAction();
-            if (!hFrame) {
-                Wh_Log(L"Local widget Reconnect — no RDP frame, ignored");
-                return FALSE;
-            }
-            ReconnectSessionClean(hFrame, L"Local widget Reconnect");
-            return TRUE;
-        }
-        case LWCMD_DISCONNECT: {
-            HWND hFrame = GetRdpFrameForAction();
-            if (!hFrame) {
-                Wh_Log(L"Local widget Disconnect — no RDP frame, ignored");
-                return FALSE;
-            }
-            Wh_Log(L"Local widget Disconnect");
-            DisconnectSession(hFrame);
-            return TRUE;
-        }
-        default:
-            Wh_Log(L"LocalWidget: unknown command 0x%02X — ignored", cmd);
-            return FALSE;
-        }
+        LocalWidgetCommandPayload request{};
+        if (!ValidateLocalWidgetCommand(reinterpret_cast<const COPYDATASTRUCT*>(lParam),
+                senderPid, &cmd, &request)) return (LRESULT)rdpstk::Result::Rejected;
+        if (!request.requestId) return (LRESULT)rdpstk::Result::Rejected;
+        auto guard = CheckBoundTarget(LOCAL_WIDGET_CLASS, request.targetPid, request.targetBirth);
+        if (guard != rdpstk::Result::Observed) return (LRESULT)guard;
+        return (LRESULT)ExecuteClientCommand(cmd);
     }
 
     case WM_DESTROY:
@@ -3327,10 +3750,11 @@ void StartLocalWidgetThread() {
         g_hLocalWidgetThreadReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     else
         ResetEvent(g_hLocalWidgetThreadReady);
+    if (!g_hLocalWidgetThreadReady) { Wh_Log(L"Thread readiness event creation failed"); return; }
     DWORD threadId = 0;
     g_hLocalWidgetThread = CreateThread(
         nullptr, 0, LocalWidgetThread, nullptr, 0, &threadId);
-    g_localWidgetThreadId.store(threadId);
+    g_localWidgetThreadId.store(g_hLocalWidgetThread ? threadId : 0);
 }
 
 void StopLocalWidgetThread() {
@@ -3342,7 +3766,7 @@ void StopLocalWidgetThread() {
         PostThreadMessageW(threadId, WM_QUIT, 0, 0);
     }
     if (g_hLocalWidgetThread) {
-        WaitForSingleObject(g_hLocalWidgetThread, 3000);
+        WaitForSingleObject(g_hLocalWidgetThread, INFINITE);
         CloseHandle(g_hLocalWidgetThread);
         g_hLocalWidgetThread = nullptr;
         g_localWidgetThreadId.store(0);
@@ -3483,6 +3907,7 @@ public:
     STDMETHODIMP Invoke(DISPID dispIdMember, REFIID, LCID, WORD,
                         DISPPARAMS* pDispParams, VARIANT*, EXCEPINFO*,
                         UINT*) override {
+        if (g_clientStopping.load()) return S_OK;
         if (dispIdMember == g_dispidNetworkStatus) {
             // OnNetworkStatusChanged([in] ULONG qualityLevel, [in] LONG
             // bandwidth, [in] LONG rtt) — rgvarg is in reverse order.
@@ -3567,8 +3992,10 @@ bool GetObjectModuleName(IUnknown* pUnk, wchar_t* out, DWORD cch) {
 // IConnectionPointContainer, FindConnectionPoint, Advise — reports its
 // HRESULT so the log says exactly where the path stopped (D-29).
 void TryAdviseRdpControl(IUnknown* pUnk, PCWSTR source, REFCLSID rclsid, bool verbose) {
-    if (g_sinkAdvised.load() || g_adviseBusy.exchange(true))
+    if (g_clientStopping.load() || g_sinkAdvised.load() || g_adviseBusy.exchange(true))
         return;
+    struct ResetBusy { ~ResetBusy() { g_adviseBusy.store(false); } } resetBusy;
+    if (g_clientStopping.load()) return;
     wchar_t clsidStr[48], mod[64];
     GuidToString(rclsid, clsidStr, ARRAYSIZE(clsidStr));
     GetObjectModuleName(pUnk, mod, ARRAYSIZE(mod));
@@ -3583,7 +4010,6 @@ void TryAdviseRdpControl(IUnknown* pUnk, PCWSTR source, REFCLSID rclsid, bool ve
                source, pUnk, clsidStr, mod[0] ? mod : L"?", hrQi,
                fromMstscax ? L" ← mstscax object" : L"");
     if (FAILED(hrQi) || !pCPC) {
-        g_adviseBusy.store(false);
         return;
     }
 
@@ -3595,13 +4021,13 @@ void TryAdviseRdpControl(IUnknown* pUnk, PCWSTR source, REFCLSID rclsid, bool ve
                source, hr,
                (SUCCEEDED(hr) && pCP) ? L" — this object IS the RDP control" : L"");
     if (FAILED(hr) || !pCP) {
-        g_adviseBusy.store(false);
         return;
     }
 
     // This object sources IMsTscAxEvents — it is the RDP control.
     ResolveEventDispids();
-    RdpEventSink* pSink = new RdpEventSink();
+    RdpEventSink* pSink = new (std::nothrow) RdpEventSink();
+    if (!pSink) { pCP->Release(); return; }
     DWORD cookie = 0;
     hr = pCP->Advise(static_cast<IDispatch*>(pSink), &cookie);
     if (SUCCEEDED(hr)) {
@@ -3619,7 +4045,6 @@ void TryAdviseRdpControl(IUnknown* pUnk, PCWSTR source, REFCLSID rclsid, bool ve
         pSink->Release();
         pCP->Release();
     }
-    g_adviseBusy.store(false);
 }
 
 // Runs only on the sink's home thread: the frame subclass calls it on the
@@ -3635,6 +4060,12 @@ void UnadviseRdpEvents(PCWSTR reason) {
         return;
     }
     HRESULT hr = g_pEventsCP->Unadvise(g_eventsCookie);
+    if (FAILED(hr)) {
+        // Failure is not proof the connection point dropped its sink reference.
+        // Keep ownership/identity intact so unload retains the module safely.
+        Wh_Log(L"RdpEvents: unadvise (%s) failed hr=0x%08X; sink retained", reason, hr);
+        return;
+    }
     g_pEventsCP->Release();
     g_pEventsCP    = nullptr;
     g_eventsCookie = 0;
@@ -4031,6 +4462,10 @@ BOOL WINAPI SetWindowTextW_Hook(HWND hWnd, LPCWSTR lpString) {
 // ── mstsc.exe branch entry points (dispatched from Wh_ModInit below) ──
 
 BOOL ModInit() {
+    if (g_clientStopping.load()) {
+        Wh_Log(L"Client code was retained after unload; restart mstsc before enabling again");
+        return FALSE;
+    }
     InitializeCriticalSection(&g_cs);
     LoadSettings();
 
@@ -4128,7 +4563,7 @@ BOOL ModInit() {
     if (g_stuckDetection)
         StartWatchdogThread();
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.10.0 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.11.1 initialized "
            L"[mstsc.exe branch] — "
            L"hide=%d overlay=%d hotkey=%d fade=%d hostname=%d "
            L"sessionInfo=%d reconnect=%d(mode=%d) stuck=%d(threshold=%ds)",
@@ -4210,6 +4645,10 @@ void ModSettingsChanged() {
 }
 
 void ModUninit() {
+    g_clientStopping.store(true);
+    ULONGLONG adviseDeadline = GetTickCount64() + 2000;
+    while (g_adviseBusy.load() && GetTickCount64() < adviseDeadline) Sleep(10);
+    bool adviseStillBusy = g_adviseBusy.load();
     StopWatchdogThread();
     StopRelayThread();
     StopLocalWidgetThread();
@@ -4219,11 +4658,13 @@ void ModUninit() {
     // session" immediately instead of after the staleness window.
     DeleteLocalWidgetStatusFile();
 
-    // A force-reconnect one-shot thread, if any, either returns within its
-    // grace period or terminates the process; give it that long so no
-    // detached thread is still running this DLL's code at unload.
-    for (int i = 0; i < 70 && g_oneShotThreads.load() > 0; i++)
-        Sleep(50);
+    // Cancel through g_clientStopping and join the retained force-reconnect
+    // thread handle before releasing state or unloading code.
+    if (g_forceThread) {
+        WaitForSingleObject(g_forceThread, INFINITE);
+        CloseHandle(g_forceThread);
+        g_forceThread = nullptr;
+    }
 
     if (g_hWatchdogThreadReady) {
         CloseHandle(g_hWatchdogThreadReady);
@@ -4254,30 +4695,51 @@ void ModUninit() {
     // Unadvise/Release has to happen where it was created (UnadviseRdpEvents
     // refuses to run anywhere else). Ask the still-installed subclass
     // synchronously, then restore the original wndproc. A hung frame thread
-    // only costs the timeout: better a leaked reference at unload than a
-    // blocked unload or a cross-apartment Release. This is the mod-unload
+    // uses a bounded send; if its STA is hung, retain inert module code until
+    // process exit so a retained COM sink never points into an unloaded DLL. This is the mod-unload
     // half of the two UnadviseRdpEvents paths; the frame's own WM_DESTROY is
     // the other, and both survived the thumbnail toolbar's removal (D-33).
+    bool keepMapped = adviseStillBusy;
     if (hFrame && origFrame && IsWindow(hFrame)) {
         DWORD_PTR result = 0;
-        if (g_msgSinkTeardown)
-            SendMessageTimeoutW(hFrame, g_msgSinkTeardown, 0, 0,
+        if (g_msgSinkTeardown && !adviseStillBusy) {
+            keepMapped = !SendMessageTimeoutW(hFrame, g_msgSinkTeardown, 0, 0,
                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &result);
-        SetWindowLongPtrW(hFrame, GWLP_WNDPROC,
-            reinterpret_cast<LONG_PTR>(origFrame));
-        EnterCriticalSection(&g_cs);
-        g_origFrameWndProc = nullptr;
-        LeaveCriticalSection(&g_cs);
+        }
+        if (!SetWindowLongPtrW(hFrame, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(origFrame))) {
+            keepMapped = true; // the live subclass may still refer to this DLL
+        }
     }
 
-    if (hBBar && origProc && IsWindow(hBBar))
-        SetWindowLongPtrW(hBBar, GWLP_WNDPROC,
-            reinterpret_cast<LONG_PTR>(origProc));
+    if (hBBar && origProc && IsWindow(hBBar) &&
+        !SetWindowLongPtrW(hBBar, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(origProc)))
+        keepMapped = true;
 
     if (hBBar && IsWindow(hBBar))
         pOrigShowWindow(hBBar, SW_SHOWNOACTIVATE);
 
-    DeleteCriticalSection(&g_cs);
+    // Subclasses are independent of Windhawk's function hooks. After removing
+    // them, fence both owning UI threads and drain callbacks before releasing
+    // their lock/code. Reentrant or hung callbacks require module retention.
+    for (HWND window : {hFrame, hBBar}) {
+        if (!window || !IsWindow(window)) continue;
+        DWORD_PTR result = 0;
+        if (!SendMessageTimeoutW(window, WM_NULL, 0, 0,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &result)) keepMapped = true;
+    }
+    if (!DrainSubclassCalls()) keepMapped = true;
+
+    if (keepMapped || adviseStillBusy || g_sinkAdvised.load()) {
+        HMODULE pinned = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_PIN, reinterpret_cast<PCWSTR>(&ModUninit), &pinned)) {
+            // Returning here would unload an event sink still owned by mstsc.
+            for (;;) Sleep(1000);
+        }
+        Wh_Log(L"Client unload: STA teardown unavailable; inert code retained until mstsc exits");
+    } else {
+        DeleteCriticalSection(&g_cs);
+    }
 }
 
 } // namespace client
@@ -4291,6 +4753,7 @@ void ModUninit() {
 // via Wh_GetModStoragePath (per mod id, identical in both this process and the
 // mstsc.exe writer's) instead of guessing at a sibling storage directory name.
 namespace embedded {
+TrackedDispatch g_Dispatch;
 
 using namespace winrt;
 using namespace Windows::Foundation;
@@ -4378,12 +4841,14 @@ bool ReadStatusFile(const std::wstring& path, LocalWidgetStatus* out) {
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE)
         return false;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(hFile, &size) || size.QuadPart != sizeof(LocalWidgetStatus)) { CloseHandle(hFile); return false; }
     LocalWidgetStatus s = {};
     DWORD read = 0;
     BOOL ok = ReadFile(hFile, &s, sizeof(s), &read, nullptr);
     CloseHandle(hFile);
     if (!ok || read != sizeof(s) || s.magic != kLocalWidgetStatusMagic ||
-        s.version != kLocalWidgetStatusVersion)
+        s.version != kLocalWidgetStatusVersion || !rdpstk::ValidSnapshotState(s))
         return false;
     s.hostname[ARRAYSIZE(s.hostname) - 1] = L'\0';
     *out = s;
@@ -4392,6 +4857,7 @@ bool ReadStatusFile(const std::wstring& path, LocalWidgetStatus* out) {
 
 // What the widget shows, derived from the snapshot.
 struct WidgetState {
+    rdpstk::Target target;
     bool              hasSnapshot = false;  // a valid record was read
     bool              stale       = false;  // …but too old to trust
     bool              active      = false;  // live session (fresh && sessionActive)
@@ -4407,6 +4873,7 @@ WidgetState g_State;
 // GetTickCount64 restarted) is treated as stale too.
 WidgetState ReadWidgetState() {
     WidgetState st;
+    st.target = rdpstk::FindTarget(LOCAL_WIDGET_CLASS);
     wchar_t path[MAX_PATH + 40];
     if (GetLocalWidgetStatusFilePath(path, ARRAYSIZE(path))) {
         ULONGLONG now = GetTickCount64();
@@ -4416,7 +4883,11 @@ WidgetState ReadWidgetState() {
             st.s = s;
             st.stale  = st.s.writeTick > now || (now - st.s.writeTick) > STATUS_STALE_MS;
             st.ageMs  = st.s.writeTick > now ? 0 : now - st.s.writeTick;
-            st.active = !st.stale && st.s.sessionActive != FALSE;
+            if (st.target.result == rdpstk::Result::Observed &&
+                (st.target.pid != s.writerPid || st.target.birth != s.writerBirth))
+                st.target.result = rdpstk::Result::TargetChanged;
+            st.active = !st.stale && st.s.sessionActive != FALSE &&
+                        st.target.result == rdpstk::Result::Observed;
         }
     }
     st.receiverFound =
@@ -4454,6 +4925,9 @@ void FormatEmbeddedStatusTooltip(const WidgetState& st, wchar_t* out, size_t cch
     out[0] = L'\0';
 
     if (!st.active) {
+        if (st.target.result != rdpstk::Result::Observed) {
+            wcscpy_s(out, cch, rdpstk::ResultText(st.target.result)); return;
+        }
         if (st.hasSnapshot && st.stale)
             swprintf_s(out, cch,
                 L"No Remote Desktop session.\nThe last status update from the "
@@ -4529,7 +5003,8 @@ PCWSTR LabelForCommand(BYTE cmd) {
 // toolbar's ComputeThumbButtons (DECISIONS.md D-19); that surface is gone
 // (D-33), the discipline stays.
 bool CommandEnabledForState(const WidgetState& st, BYTE cmd) {
-    bool a = st.active, iconic = a && st.s.iconic;
+    bool a = st.active && st.target.result == rdpstk::Result::Observed;
+    bool iconic = a && st.s.iconic;
     switch (cmd) {
     case LWCMD_MINIMIZE:          return a && !iconic;
     case LWCMD_RESTORE:           return a && iconic;
@@ -4547,21 +5022,61 @@ bool CommandEnabledForState(const WidgetState& st, BYTE cmd) {
 // SendMessageW, so a hung mstsc can never wedge the sender. Runs on the status
 // thread, never the XAML UI thread.
 
-bool SendLocalWidgetCommand(HWND hSenderWnd, BYTE cmd, PCWSTR label) {
-    HWND hTarget = FindWindowExW(HWND_MESSAGE, nullptr, LOCAL_WIDGET_CLASS, nullptr);
-    if (!hTarget) {
-        Wh_Log(L"Command %s: no %s window — is the client mod loaded in mstsc?",
-            label, LOCAL_WIDGET_CLASS);
-        return false;
+struct ActionFeedback {
+    BYTE command = 0;
+    rdpstk::Result result = rdpstk::Result::Unknown;
+    DWORD pid = 0;
+    ULONGLONG birth = 0, tick = 0;
+    bool fullscreen = false;
+};
+std::mutex g_FeedbackMutex;
+ActionFeedback g_Feedback;
+void SetFeedback(BYTE command, rdpstk::Result result, const WidgetState& st, ULONGLONG sentTick = 0) {
+    std::lock_guard<std::mutex> lock(g_FeedbackMutex);
+    g_Feedback = {command, result, st.s.writerPid, st.s.writerBirth,
+                  sentTick ? sentTick : GetTickCount64(), st.s.fullscreen != FALSE};
+}
+std::wstring FeedbackText() {
+    std::lock_guard<std::mutex> lock(g_FeedbackMutex);
+    if (!g_Feedback.command || GetTickCount64() - g_Feedback.tick > 10000) return {};
+    return std::wstring(LabelForCommand(g_Feedback.command)) + L": " +
+           rdpstk::ResultText(g_Feedback.result);
+}
+void ObserveFeedback(const WidgetState& st) {
+    std::lock_guard<std::mutex> lock(g_FeedbackMutex);
+    auto& f = g_Feedback;
+    if (!f.command || f.result != rdpstk::Result::Accepted) return;
+    // Closing this process is the expected result of these terminal actions.
+    // Preserve acceptance; absence cannot prove a replacement connected.
+    if (f.command == LWCMD_RECONNECT || f.command == LWCMD_DISCONNECT) return;
+    if (st.target.result != rdpstk::Result::Observed) {
+        f.result = st.target.result; return;
     }
+    if (st.active && st.s.writerPid == f.pid && st.s.writerBirth == f.birth &&
+        st.s.writeTick >= f.tick &&
+        rdpstk::WindowOutcome(f.command, f.fullscreen, st.s.fullscreen != FALSE, st.s.iconic != FALSE))
+        f.result = rdpstk::Result::Observed;
+    else if (GetTickCount64() - f.tick > 5000 && f.command <= LWCMD_FULLSCREEN_TOGGLE)
+        f.result = rdpstk::Result::Unknown;
+}
+
+rdpstk::Result SendLocalWidgetCommand(HWND hSenderWnd, BYTE cmd, PCWSTR label,
+                                        const WidgetState& st) {
+    auto target = rdpstk::FindTarget(LOCAL_WIDGET_CLASS, st.s.writerPid, st.s.writerBirth);
+    if (target.result != rdpstk::Result::Observed) return target.result;
+    HWND hTarget = target.window;
+    if (cmd == LWCMD_FULLSCREEN_TOGGLE) AllowSetForegroundWindow(target.pid);
     LocalWidgetCommandPayload p = {};
     p.magic   = kLocalWidgetCmdMagic;
     p.version = kLocalWidgetCmdVersion;
     p.command = cmd;
+    p.targetPid = target.pid; p.targetBirth = target.birth;
+    static std::atomic<ULONGLONG> nextRequest{1};
+    p.requestId = nextRequest.fetch_add(1);
     if (!ReadLocalWidgetSecret(p.secret)) {
         Wh_Log(L"Command %s: no shared secret in HKCU\\%s — not sent", label,
             LOCAL_WIDGET_REG_KEY);
-        return false;
+        return rdpstk::Result::Rejected;
     }
     COPYDATASTRUCT cds = {};
     cds.dwData = kLocalWidgetCmdMagic;
@@ -4575,10 +5090,10 @@ bool SendLocalWidgetCommand(HWND hSenderWnd, BYTE cmd, PCWSTR label) {
     if (!ok) {
         Wh_Log(L"Command %s: SendMessageTimeoutW failed GLE=%d (target %p)",
             label, GetLastError(), hTarget);
-        return false;
+        return rdpstk::Result::TimedOut;
     }
     Wh_Log(L"Command %s (0x%02X) → %p, handled=%d", label, cmd, hTarget, (int)result);
-    return result != 0;
+    return rdpstk::CommandReply(result);
 }
 
 // ── Status-thread-owned window handle ─────────────────────────────────────
@@ -4613,6 +5128,7 @@ void RefreshThemeUI();   // XAML side, below (live theme change)
 // column needs a live per-second tick regardless of whether anything changed.
 void PollStatus() {
     WidgetState fresh = ReadWidgetState();
+    ObserveFeedback(fresh);
     {
         std::lock_guard<std::mutex> g(g_StateMutex);
         const WidgetState& old = g_State;
@@ -4666,50 +5182,21 @@ LRESULT CALLBACK StatusWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
 // the mstsc-side sender validation resolves pids from a window handle
 // (GetWindowThreadProcessId). Minimize / Restore / Disconnect / Reconnect
 // need no foreground right and are deliberately not granted one.
-void GrantForegroundRightToReceiver(PCWSTR label) {
-    HWND hTarget = FindWindowExW(HWND_MESSAGE, nullptr, LOCAL_WIDGET_CLASS, nullptr);
-    DWORD pid = 0;
-    if (hTarget)
-        GetWindowThreadProcessId(hTarget, &pid);
-    if (!pid) {
-        Wh_Log(L"Command %s: receiver pid unresolved (window %p) — foreground "
-               L"right not granted", label, hTarget);
-        return;
-    }
-    if (AllowSetForegroundWindow(pid)) {
-        Wh_Log(L"Command %s: AllowSetForegroundWindow(pid=%u) granted", label, pid);
-    } else {
-        // ERROR_ACCESS_DENIED here means this process does not hold the right
-        // right now (the click is no longer the last input event) — the
-        // mstsc side then falls back to its AttachThreadInput path.
-        Wh_Log(L"Command %s: AllowSetForegroundWindow(pid=%u) FAILED GLE=%d — "
-               L"mstsc will have to rely on its own fallback", label, pid,
-               GetLastError());
-    }
-}
-
 // Re-checks the command against the freshest state before sending — the
 // click-time re-check discipline established with the thumbnail toolbar
 // (DECISIONS.md D-8/D-12/D-19) and kept after it was removed (D-33), so a
 // stale XAML IsEnabled can never let a disallowed command through.
 void OnSendCommand(BYTE cmd) {
-    WidgetState st;
-    {
-        std::lock_guard<std::mutex> g(g_StateMutex);
-        st = g_State;
-    }
+    WidgetState st = ReadWidgetState();
     if (!CommandEnabledForState(st, cmd)) {
-        Wh_Log(L"Command %s ignored — not valid for current state (active=%d iconic=%d)",
-            LabelForCommand(cmd), (int)st.active, (int)(st.active && st.s.iconic));
-        return;
+        SetFeedback(cmd, st.target.result == rdpstk::Result::Observed
+            ? rdpstk::Result::Unavailable : st.target.result, st);
+    } else {
+        ULONGLONG sentTick = GetTickCount64();
+        auto result = SendLocalWidgetCommand(g_hStatusWnd, cmd, LabelForCommand(cmd), st);
+        SetFeedback(cmd, result, st, sentTick);
     }
-    // The fullscreen toggle is the one command whose handler on the mstsc
-    // side needs the foreground; grant it right before the send (D-27).
-    if (cmd == LWCMD_FULLSCREEN_TOGGLE)
-        GrantForegroundRightToReceiver(LabelForCommand(cmd));
-    // wParam of WM_COPYDATA is the sender's window: the hidden status window
-    // (this process) — the receiver logs its pid.
-    SendLocalWidgetCommand(g_hStatusWnd, cmd, LabelForCommand(cmd));
+    RefreshWidgetUI();
 }
 
 DWORD WINAPI StatusThread(LPVOID) {
@@ -4763,9 +5250,10 @@ void StartStatusThread() {
         g_hStatusThreadReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     else
         ResetEvent(g_hStatusThreadReady);
+    if (!g_hStatusThreadReady) { Wh_Log(L"Thread readiness event creation failed"); return; }
     DWORD threadId = 0;
     g_hStatusThread = CreateThread(nullptr, 0, StatusThread, nullptr, 0, &threadId);
-    g_statusThreadId.store(threadId);
+    g_statusThreadId.store(g_hStatusThread ? threadId : 0);
 }
 
 void StopStatusThread() {
@@ -4776,7 +5264,7 @@ void StopStatusThread() {
         PostThreadMessageW(threadId, WM_QUIT, 0, 0);
     }
     if (g_hStatusThread) {
-        WaitForSingleObject(g_hStatusThread, 3000);
+        WaitForSingleObject(g_hStatusThread, INFINITE);
         CloseHandle(g_hStatusThread);
         g_hStatusThread = nullptr;
         g_statusThreadId.store(0);
@@ -5074,6 +5562,7 @@ void ApplyThemeToWidget(Grid const& widget) {
 // Live theme change: re-read the system theme and, when it flipped, repaint
 // every panel with the newly inverted palette. Any thread.
 void RefreshThemeUI() {
+    if (g_Unloading.load()) return;
     if (!RefreshSystemTheme()) return;
     bool light = g_SystemLightTheme.load();
     Wh_Log(L"[theme] system theme now %s — applying the %s panel palette",
@@ -5081,7 +5570,7 @@ void RefreshThemeUI() {
     for (auto& widget : GetLiveWidgets()) {
         try {
             auto weak = make_weak(widget);
-            widget.Dispatcher().RunAsync(
+            g_Dispatch.Post(widget,
                 Windows::UI::Core::CoreDispatcherPriority::Normal,
                 [weak]() {
                     if (auto w = weak.get()) {
@@ -5201,7 +5690,9 @@ void ApplyStateToWidget(Grid widget) {
             wcscpy_s(line, ARRAYSIZE(line), (st.hasSnapshot && st.stale)
                 ? L"last seen a while ago" : L"\x2014");
         }
-        tb.Text(line);
+        auto feedback = FeedbackText();
+        tb.Text(st.target.result == rdpstk::Result::Ambiguous
+            ? L"Multiple clients; controls paused" : !feedback.empty() ? feedback.c_str() : line);
         PanelPalette pal = GetPanelPalette();
         tb.Foreground(SolidColorBrush(
             active && st.s.hung ? pal.alert : pal.secondary));
@@ -5214,7 +5705,9 @@ void ApplyStateToWidget(Grid widget) {
     if (auto col = FindByName<FrameworkElement>(widget, kStatusColumnName)) {
         wchar_t tip[512];
         FormatEmbeddedStatusTooltip(st, tip, ARRAYSIZE(tip));
-        SetElementTooltip(col, tip);
+        auto feedback = FeedbackText();
+        auto fullTip = std::wstring(tip) + (feedback.empty() ? L"" : L"\n" + feedback);
+        SetElementTooltip(col, fullTip.c_str());
     }
 
     auto setButton = [&](std::wstring_view name, BYTE cmd) {
@@ -5279,6 +5772,7 @@ Button MakeActionButton(std::wstring_view name, wchar_t glyphChar,
     SetElementTooltip(btn, tooltip);
     btn.Click(RoutedEventHandler(
         [cmd](IInspectable const&, RoutedEventArgs const&) {
+            if (g_Unloading.load()) return;
             DWORD tid = g_statusThreadId.load();
             if (tid)
                 PostThreadMessageW(tid, WM_EMBED_SEND_COMMAND, (WPARAM)cmd, 0);
@@ -5388,10 +5882,11 @@ Grid BuildWidget() {
 // Refresh from any thread: marshals ApplyStateToWidget onto each live
 // widget's own UI thread (one panel per monitor's taskbar frame).
 void RefreshWidgetUI() {
+    if (g_Unloading.load()) return;
     for (auto& widget : GetLiveWidgets()) {
         try {
             auto weak = make_weak(widget);
-            widget.Dispatcher().RunAsync(
+            g_Dispatch.Post(widget,
                 Windows::UI::Core::CoreDispatcherPriority::Normal,
                 [weak]() {
                     if (auto w = weak.get()) ApplyStateToWidget(w);
@@ -5460,7 +5955,7 @@ void ScheduleScanAsync(FrameworkElement startNode) {
 
     auto weak = make_weak(startNode);
     try {
-        startNode.Dispatcher().RunAsync(
+        g_Dispatch.Post(startNode,
             Windows::UI::Core::CoreDispatcherPriority::Low,
             [weak]() {
                 g_ScanPending = false;
@@ -5493,13 +5988,13 @@ void RemoveWidget() {
         g_Instances.clear();
     }
     for (auto& inst : instances) {
-        Grid rootGrid = inst.rootGrid.get();
-        if (!rootGrid) continue;
         try {
+            Grid rootGrid = inst.rootGrid.get();
+            if (!rootGrid) continue;
             auto weakGrid = make_weak(rootGrid);
             auto weakTray = inst.tray;
             event_token token = inst.trayResizeToken;
-            rootGrid.Dispatcher().RunAsync(
+            g_Dispatch.PostCleanup(rootGrid,
                 Windows::UI::Core::CoreDispatcherPriority::Normal,
                 [weakGrid, weakTray, token]() {
                     // All XAML cleanup on the dispatcher thread.
@@ -5517,7 +6012,7 @@ void RemoveWidget() {
                         }
                     }
                 });
-        } catch (...) {}
+        } catch (...) { TrackedDispatch::RetainCode(); }
     }
 }
 
@@ -5601,6 +6096,10 @@ void PollForTaskbarViewDll() {
 
 BOOL ModInit() {
     g_ModInitTick = GetTickCount64();
+    if (g_Unloading.load()) {
+        Wh_Log(L"Taskbar code was retained after unload; restart Explorer before enabling again");
+        return FALSE;
+    }
     LoadSettings();
 
     // Seed the theme state before anything is built; live flips arrive via
@@ -5624,13 +6123,17 @@ BOOL ModInit() {
 
     if (taskbarView) {
         g_TaskbarViewDllLoaded = true;
-        if (!HookTaskbarViewDllSymbols(taskbarView)) return FALSE;
+        if (!HookTaskbarViewDllSymbols(taskbarView)) {
+            StopStatusThread();
+            if (g_hStatusThreadReady) { CloseHandle(g_hStatusThreadReady); g_hStatusThreadReady = nullptr; }
+            return FALSE;
+        }
         TriggerInitialScan();
     } else {
         PollForTaskbarViewDll();
     }
 
-    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.10.0 initialized "
+    Wh_Log(L"RDP Session Toolkit Taskbar Client v0.11.1 initialized "
            L"[explorer.exe branch — taskbar-embedded panel] — "
            L"position=%d width=%d showWhenNoSession=%d reconnect=%d "
            L"fsToggle=%d sessionInfo=%d quality=%d",
@@ -5653,10 +6156,12 @@ void ModUninit() {
         g_hStatusThreadReady = nullptr;
     }
 
+    g_Dispatch.Drain();
     RemoveWidget();
+    g_Dispatch.Drain();
 
     // Spin until in-flight hooks finish.
-    for (int i = 0; i < 50 && g_HookCallCounter.load() > 0; ++i) Sleep(100);
+    while (g_HookCallCounter.load() > 0) Sleep(10);
 
     Wh_Log(L"RDP Session Toolkit Taskbar Client uninitialized "
            L"[explorer.exe branch]");
@@ -5674,7 +6179,7 @@ void ModSettingsChanged() {
                 g_Settings.widgetPosition == WidgetPosition::Left   ? HorizontalAlignment::Left   :
                 g_Settings.widgetPosition == WidgetPosition::Center ? HorizontalAlignment::Center :
                                                                       HorizontalAlignment::Right;
-            widget.Dispatcher().RunAsync(
+            g_Dispatch.Post(widget,
                 Windows::UI::Core::CoreDispatcherPriority::Normal,
                 [weak, w, fs, ha]() {
                     auto g = weak.get();
@@ -5715,7 +6220,7 @@ BOOL Wh_ModInit() {
     case HostProcess::Explorer:
         return embedded::ModInit();
     default:
-        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.10.0 loaded in a process "
+        Wh_Log(L"RDP Session Toolkit Taskbar Client v0.11.1 loaded in a process "
                L"that is neither mstsc.exe nor explorer.exe — inert no-op");
         return TRUE;
     }

@@ -144,7 +144,48 @@ record and are superseded by this verification.
 
 ## Active Work
 
-**Latest session (2026-09-06) — verification and reconciliation.** Operator
+**Diagnostics and session reliability implementation.** The requested top-three
+additions and their prerequisite fixes are implemented in the current sources.
+See [REFINEMENT_PLAN.md](../../REFINEMENT_PLAN.md) for scope,
+[runtime regression checks](../../probes/runtime/README.md) for local validation,
+and [TOP_THREE_ACCEPTANCE.md](../../TOP_THREE_ACCEPTANCE.md) for the matched
+candidate, compatibility behavior and rollback. Runtime acceptance is tracked
+by LOOP-011; distribution readiness remains under LOOP-010. The dated work log
+records checks and artifacts. The installed runtime was not changed.
+The pre-home-test [implementation review](../../IMPLEMENTATION_REVIEW.md)
+records the follow-up corrections under D-45; use its replacement candidate
+recorded in WORK_LOG.
+
+**Comparative feature review.** See
+[`BEST_NEXT_ADDITIONS.md`](../../BEST_NEXT_ADDITIONS.md) for the repository-based
+product comparison, utility/fit scores, best next additions, and the disposition
+of existing, deferred, and excluded features. This is a planning report; the
+active implementation sequence remains in `REFINEMENT_PLAN.md`.
+
+**First refinement candidate (2026-09-18).** The operator authorized planning
+and the first implementation pass while remote. See
+[`REFINEMENT_PLAN.md`](../../REFINEMENT_PLAN.md) for the staged work and pass-1
+results, and [`HOME_TEST.md`](../../HOME_TEST.md) for home acceptance and rollback.
+Client 0.10.1 and relay 0.2.1 are candidate source/builds; the host is unchanged.
+The earlier verified-runtime versions below and above describe the baseline.
+No live installation was changed; LOOP-010 remains open.
+
+**Toolkit-only packaging research (2026-09-18).** See
+[`PACKAGING_RESEARCH.md`](../../PACKAGING_RESEARCH.md) for the current feasibility
+assessment and [`probes/packaging/`](../../probes/packaging/README.md) for safe
+reproductions. D-42 records the operator's prerequisite-installation boundary;
+LOOP-010 tracks the remaining deployment validation. This research did not
+change production runtime code or perform an installation. The work log records
+the checks completed in this session.
+
+**Repository purpose and expansion review.** See
+[`REPOSITORY_REVIEW.md`](../../REPOSITORY_REVIEW.md) for the proposed mission,
+architecture explanation, source-based findings, and sequenced feature plan.
+Recommendations remain proposals; no feature implementation or mission
+adoption was recorded by this review. The dated work-log entry records scope
+and verification. Earlier session notes below are historical context.
+
+**Earlier session (2026-09-06) — verification and reconciliation.** Operator
 confirmation closes the live-test work for the current batch. The remaining
 work is release hygiene: commit the current changes (including the retained
 probe source), keep documentation aligned with the verified architecture, and

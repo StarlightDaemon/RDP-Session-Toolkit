@@ -1,10 +1,44 @@
 # RDP Session Toolkit
 
+**Diagnostics and session reliability candidate:** client 0.11.1, host 0.5.1
+and relay 0.3.1 add local diagnostics, action feedback and a conservative
+multiple-client guard, with owned workers, bounded relay logs and safer unload.
+Protocol v3 requires matching components and refuses legacy actions. See
+[candidate acceptance and rollback](TOP_THREE_ACCEPTANCE.md),
+[runtime regression checks](probes/runtime/README.md), and the
+[implementation plan](REFINEMENT_PLAN.md). This source is locally checked;
+installed-runtime acceptance remains separate.
+Use the [home update, test and rollback guide](HOME_UPDATE_TEST_ROLLBACK.md)
+for the step-by-step procedure on both machines; it is included in candidate ZIPs.
+The [implementation review](IMPLEMENTATION_REVIEW.md) describes the corrected
+bugs, security boundaries and remaining home-test gates.
+
+Run `./scripts/Get-ToolkitDiagnostics.ps1` for a read-only local explanation,
+or add `-Json` for structured output. The script does not start or repair
+components, read secrets/clipboard contents, or upload anything.
+
+The registration-refinement notice below describes the preceding candidate.
+
+**Refinement candidate available:** client 0.10.1 and relay 0.2.1 add coordinated
+path handling and safer registration/removal; host 0.4.0 is unchanged. This
+candidate has passed local checks but has not been live-tested. Follow the
+[refinement plan](REFINEMENT_PLAN.md) and [home-test checklist](HOME_TEST.md).
+The verified-runtime statements below describe the preceding component set.
+
 **Status: working, personal-use toolkit.** The client and host taskbar widgets
 and the Dynamic Virtual Channel relay have been live-tested by the operator
 over several days, including the cross-machine control and status paths. The
 repository remains intentionally conservative about its trust boundary and is
 not yet packaged for general distribution.
+
+For a repository explanation, proposed mission, and sequenced feature plan, see
+[Repository review and proposed direction](REPOSITORY_REVIEW.md). The proposal
+keeps the taskbar controls central while allowing small session diagnostics and
+recovery utilities beyond the toolbar.
+
+[Packaging feasibility research](PACKAGING_RESEARCH.md) assesses a toolkit-only
+setup program that reuses a separately installed Windhawk, with reproducible
+probes, deployment findings, and the remaining validation gates.
 
 ## What this is
 
@@ -28,7 +62,7 @@ repository, separate from this fork's ongoing changes.
 The two repos are split because they carry different trust levels, not just different
 feature sets. `Hide RDP Connection Bar` is a single UI mod with a narrow, easily-audited
 scope. This repository is where a **native standalone executable that registers as a COM
-server and can act on a live RDP session** will eventually live — a much larger attack
+server and can act on a live RDP session** lives — a much larger attack
 surface and a much higher bar for review before anyone other than the author should run
 it. Keeping it in its own repo keeps that distinction visible instead of quietly
 expanding the trust footprint of the original mod.
@@ -39,7 +73,9 @@ expanding the trust footprint of the original mod.
 runs inside `mstsc.exe` (the Windows Remote Desktop client) on your local machine. It's
 a fork of Hide RDP Connection Bar, extended with session controls and a status panel that
 the mod embeds in your own taskbar (from `explorer.exe`). Everything it does is entirely
-local to the client machine — it does not talk to the remote session host in any way yet.
+local to the client machine. Its local controls work independently; with the relay
+installed, it also receives host-widget commands and publishes client state that
+the relay returns to the host.
 
 It compiles cleanly against the Windhawk toolchain and has been live-tested by the
 operator across the panel, overlay, session controls, and relay-backed host actions.
@@ -57,8 +93,9 @@ operator across the panel, overlay, session controls, and relay-backed host acti
 
 ### Usage
 
-Once enabled, a status panel appears in your own taskbar with all five actions as
-always-visible buttons, each with a tooltip explaining what the click does. An optional
+Once enabled, a status panel appears in your own taskbar with session action
+buttons, each with a tooltip explaining what the click does. Reconnect is hidden
+by default and appears when enabled in settings. An optional
 floating on-screen button (off by default; corner and offset are configurable in the
 Windhawk mod settings) offers Minimize, Restore, and Disconnect on the RDP monitor
 itself. The controls are:
@@ -95,7 +132,7 @@ The mod also has other configurable options (hiding the native connection bar, a
 fade effect, a disconnect hotkey, per-feature toggles for everything above) — see the
 mod's own settings in Windhawk for the full list.
 
-### Alternative presentation: a status panel in your own taskbar
+### Primary presentation: a status panel in your own taskbar
 
 As of **v0.6.0** the client mod also targets `explorer.exe` on the *client* machine
 (a single Windhawk mod can target more than one process). When loaded there, its
@@ -111,8 +148,8 @@ it reads a status file the mstsc.exe branch writes once a second and sends its a
 back over a local, secret-guarded message channel. Because both surfaces are now one
 mod id, the panel finds that status file directly (no sibling-directory guessing). To
 use only the taskbar panel, leave *Show floating overlay button* off (its default).
-The panel renders and its status tooltip is live-confirmed; most of its command rows
-still await their own live pass.
+See the verification record in
+[D-41](.raiden/state/DECISIONS.md#d-41-operator-verification-closes-the-current-live-test-batch).
 
 (This was previously a third, separate mod, `rdp-session-toolkit-taskbar-client-embedded`;
 it was folded into the client mod at v0.6.0 — see

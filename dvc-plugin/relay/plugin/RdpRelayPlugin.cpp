@@ -9,225 +9,117 @@
 #include <cstdio>
 #include <string>
 
-// ===========================================================================
-// RelayLog: append one timestamped line to RELAY_LOG_FILENAME next to this EXE,
-// mirrored to OutputDebugString. Identical mechanism to the probe's ProbeLog --
-// mstsc launches this LocalServer with an arbitrary working directory, so the
-// log path is resolved from the module path, not a relative name.
-// ===========================================================================
-void RelayLog(const char* format, ...)
+// Keep at most one 1 MiB current log and one 1 MiB backup, in user storage.
+// A zero-length lock file serializes writers across processes and sessions.
+// Contention drops a diagnostic line instead of blocking a COM callback.
+void RelayLog(const char* format, ...) noexcept
 {
-    char msg[1024];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(msg, sizeof(msg), format, args);
-    va_end(args);
-    msg[sizeof(msg) - 1] = '\0';
-
-    SYSTEMTIME st;
-    GetLocalTime(&st);
+    char message[1024]; va_list args; va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args); va_end(args);
+    message[sizeof(message)-1] = 0;
+    SYSTEMTIME time; GetSystemTime(&time);
     char line[1200];
-    int n = snprintf(line, sizeof(line),
-        "%04u-%02u-%02u %02u:%02u:%02u.%03u  pid=%lu  %s\r\n",
-        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
-        st.wMilliseconds, GetCurrentProcessId(), msg);
-    if (n < 0) return;
-    if (n > (int)sizeof(line)) n = (int)sizeof(line);
-
+    int length = snprintf(line, sizeof(line),
+        "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ pid=%lu %s\r\n",
+        time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute,
+        time.wSecond, time.wMilliseconds, GetCurrentProcessId(), message);
+    if (length <= 0) return;
+    DWORD bytes = (DWORD)((size_t)length < sizeof(line) ? length : sizeof(line)-1);
     OutputDebugStringA(line);
-
-    wchar_t modPath[MAX_PATH];
-    DWORD len = GetModuleFileNameW(nullptr, modPath, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) return;
-    for (DWORD i = len; i > 0; --i)
-    {
-        if (modPath[i - 1] == L'\\' || modPath[i - 1] == L'/')
-        {
-            modPath[i] = L'\0';
-            break;
+    wchar_t base[MAX_PATH]{};
+    DWORD count = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+    if (!count || count >= MAX_PATH) return;
+    // Logging must never throw through an RPC/COM boundary or an object
+    // destructor. Construct paths before acquiring any native handles.
+    try {
+    std::wstring directory = std::wstring(base) + L"\\RDPSessionToolkit";
+    if (!CreateDirectoryW(directory.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return;
+    std::wstring path = directory + L"\\dvc-relay.log";
+    std::wstring lockPath = path + L".lock";
+    std::wstring previous = path + L".old";
+    HANDLE lock = CreateFileW(lockPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (lock == INVALID_HANDLE_VALUE) return;
+    HANDLE log = CreateFileW(path.c_str(), FILE_APPEND_DATA | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (log != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER size{};
+        if (GetFileSizeEx(log, &size) && size.QuadPart + bytes > 1024*1024) {
+            CloseHandle(log);
+            if (!MoveFileExW(path.c_str(), previous.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+                CloseHandle(lock); return;
+            }
+            log = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+                nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        }
+        if (log != INVALID_HANDLE_VALUE) {
+            DWORD written = 0; WriteFile(log, line, bytes, &written, nullptr); CloseHandle(log);
         }
     }
-    std::wstring logPath = std::wstring(modPath) + RELAY_LOG_FILENAME;
-
-    HANDLE hFile = CreateFileW(
-        logPath.c_str(),
-        FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) return;
-
-    DWORD written = 0;
-    WriteFile(hFile, line, (DWORD)n, &written, nullptr);
-    CloseHandle(hFile);
+    CloseHandle(lock);
+    } catch (...) { /* best-effort diagnostics must not affect the channel */ }
 }
 
-// ===========================================================================
-// Identity window
-//
-// WM_COPYDATA's wParam is, by contract, a handle to the window passing the
-// data. The client mod's receiver uses it (GetWindowThreadProcessId) to learn
-// THIS plugin's process id and validate that the sender's image path is the
-// registered relay EXE (DECISIONS.md D-11). So we must pass a real HWND owned
-// by this process. We create one hidden message-only window for that identity;
-// it is never shown and never needs a message pump -- it exists only so the
-// receiver can resolve our pid. Created once, lazily, thread-safely.
-// ===========================================================================
-static const wchar_t kIdentityClass[] = L"RdpSessionToolkitDvcRelayIdentity";
-static HWND           g_identityWindow = nullptr;
-static INIT_ONCE      g_identityInit   = INIT_ONCE_STATIC_INIT;
-
-static BOOL CALLBACK CreateIdentityWindowOnce(PINIT_ONCE, PVOID, PVOID*)
-{
-    WNDCLASSEXW wc   = { sizeof(wc) };
-    wc.lpfnWndProc   = DefWindowProcW;
-    wc.hInstance     = GetModuleHandleW(nullptr);
-    wc.lpszClassName = kIdentityClass;
-    // Ignore "already registered" so a re-entrant path can't fail the class.
+static HWND g_identityWindow = nullptr;
+bool InitializeRelayIdentity() {
+    WNDCLASSEXW wc{sizeof(wc)};
+    wc.lpfnWndProc = DefWindowProcW; wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"RdpSessionToolkitDvcRelayIdentity";
     RegisterClassExW(&wc);
-
-    g_identityWindow = CreateWindowExW(0, kIdentityClass, L"", 0, 0, 0, 0, 0,
-        HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!g_identityWindow)
-        RelayLog("identity window creation FAILED GLE=%lu", GetLastError());
-    else
-        RelayLog("identity window created HWND=0x%p", g_identityWindow);
-    return TRUE;
+    g_identityWindow = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0,
+        HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
+    return g_identityWindow != nullptr;
+}
+void DestroyRelayIdentity() {
+    if (g_identityWindow) DestroyWindow(g_identityWindow);
+    g_identityWindow = nullptr;
 }
 
-static HWND EnsureIdentityWindow()
-{
-    InitOnceExecuteOnce(&g_identityInit, CreateIdentityWindowOnce, nullptr, nullptr);
-    return g_identityWindow;
-}
-
-// ===========================================================================
-// ForwardFirstByte: the whole job of this plugin.
-//
-// Relay the payload's first byte AS-IS -- no translation, no reinterpretation,
-// no protocol logic -- to the client mod's existing CitadelRdpTaskbarRelay
-// message-only window via WM_COPYDATA, discovered exactly the way the client
-// mod's own local self-test path discovers it (FindWindowExW over HWND_MESSAGE
-// children by class name). The client mod's receiver is the sole interpreter of
-// the byte.
-// ===========================================================================
-static void ForwardFirstByte(BYTE cmd)
-{
-    HWND hTarget = FindWindowExW(HWND_MESSAGE, nullptr, RELAY_TARGET_WINDOW_CLASS, nullptr);
-    if (!hTarget)
-    {
-        RelayLog("forward: target window (%ls) not found -- client mod not loaded? dropping byte 0x%02X",
-                 RELAY_TARGET_WINDOW_CLASS, cmd);
-        return;
-    }
-
-    HWND hIdentity = EnsureIdentityWindow();  // may be null; receiver then sees wParam == 0
-
-    COPYDATASTRUCT cds = {};
-    cds.dwData = 0;
-    cds.cbData = 1;         // forward exactly one byte, as-is
-    cds.lpData = &cmd;
-
+static rdpstk::Result ForwardBoundCommand(const rdpstk::Request& request) {
+    auto target = rdpstk::FindTarget(RELAY_TARGET_WINDOW_CLASS, request.targetPid, request.targetBirth);
+    if (target.result != rdpstk::Result::Observed) return target.result;
+    if (!g_identityWindow) return rdpstk::Result::Unavailable;
+    rdpstk::BoundCommand bound;
+    bound.targetPid = target.pid; bound.targetBirth = target.birth;
+    bound.requestId = request.requestId; bound.command = request.command;
+    COPYDATASTRUCT data{0, sizeof(bound), &bound};
     DWORD_PTR result = 0;
-    // Synchronous but bounded: never let a hung mstsc/UI thread wedge this DVC
-    // callback thread. SMTO_ABORTIFHUNG returns promptly if the target is stuck.
-    LRESULT sent = SendMessageTimeoutW(
-        hTarget, WM_COPYDATA,
-        reinterpret_cast<WPARAM>(hIdentity),
-        reinterpret_cast<LPARAM>(&cds),
-        SMTO_ABORTIFHUNG, 5000, &result);
-
-    if (!sent)
-        RelayLog("forward: SendMessageTimeoutW to %p FAILED GLE=%lu (byte 0x%02X)",
-                 hTarget, GetLastError(), cmd);
-    else
-        RelayLog("forward: byte 0x%02X delivered to %p, handled=%ld",
-                 cmd, hTarget, (long)result);
+    if (!SendMessageTimeoutW(target.window, WM_COPYDATA, (WPARAM)g_identityWindow,
+        (LPARAM)&data, SMTO_ABORTIFHUNG | SMTO_BLOCK, 1500, &result))
+        return rdpstk::Result::TimedOut;
+    return rdpstk::CommandReply(result);
 }
 
-// ===========================================================================
-// BuildStatusReply: fill a RelayStatusReply from the client mod's status
-// snapshot, or leave it stateKnown=0 when no trustworthy snapshot exists.
-//
-// The snapshot's location comes from the registry value the client mod
-// publishes at its own ModInit (HKCU\Software\RDPSessionToolkit\
-// ClientModStoragePath) — the mod's actual resolved Wh_GetModStoragePath
-// directory, which this plugin cannot compute itself. No directory-name
-// guessing (the fragility DECISIONS.md D-26 eliminated is not reintroduced):
-// if the value is absent, the answer is "state unknown", never a guess.
-//
-// Every rejection path is logged with its specific reason and reports
-// stateKnown=0 — the host must never render a stale or unreadable snapshot
-// as fact (the same rule as the explorer branch's own staleness handling).
-// ===========================================================================
-static void BuildStatusReply(RelayStatusReply* reply)
-{
-    memset(reply, 0, sizeof(*reply));
-    reply->magic   = RELAY_STATUS_REPLY_MAGIC;
-    reply->version = RELAY_STATUS_REPLY_VERSION;
-
-    wchar_t dir[MAX_PATH] = {};
-    DWORD cb = sizeof(dir) - sizeof(wchar_t);
-    LSTATUS r = RegGetValueW(HKEY_CURRENT_USER, RELAY_STATUS_REG_KEY,
-                             RELAY_STATUS_REG_VALUE, RRF_RT_REG_SZ,
-                             nullptr, dir, &cb);
-    if (r != ERROR_SUCCESS || !dir[0])
-    {
-        RelayLog("status: HKCU\\%ls\\%ls absent/unreadable (%ld) -- the client "
-                 "mod has not published its storage path; state unknown",
-                 RELAY_STATUS_REG_KEY, RELAY_STATUS_REG_VALUE, (long)r);
-        return;
-    }
-
-    std::wstring path(dir);
-    if (!path.empty() && path.back() != L'\\') path += L'\\';
+static rdpstk::Result BuildStatusReply(rdpstk::Reply* reply) {
+    auto target = rdpstk::FindTarget(RELAY_TARGET_WINDOW_CLASS);
+    if (target.result != rdpstk::Result::Observed) return target.result;
+    wchar_t directory[MAX_PATH]{};
+    DWORD size = sizeof(directory);
+    if (RegGetValueW(HKEY_CURRENT_USER, RELAY_STATUS_REG_KEY, RELAY_STATUS_REG_VALUE,
+        RRF_RT_REG_SZ, nullptr, directory, &size) != ERROR_SUCCESS || !directory[0])
+        return rdpstk::Result::Unavailable;
+    std::wstring path(directory);
+    if (path.back() != L'\\') path += L'\\';
     path += RELAY_STATUS_FILENAME;
-
-    // Same share mode the explorer branch reads with, against the writer's
-    // OPEN_ALWAYS + single-WriteFile discipline (a reader never sees a
-    // truncated record).
-    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ,
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE)
-    {
-        RelayLog("status: snapshot open failed GLE=%lu (%ls) -- state unknown",
-                 GetLastError(), path.c_str());
-        return;
-    }
-    RelayClientStatus s;
-    DWORD bytesRead = 0;
-    BOOL ok = ReadFile(hFile, &s, sizeof(s), &bytesRead, nullptr);
-    CloseHandle(hFile);
-    if (!ok || bytesRead != sizeof(s))
-    {
-        RelayLog("status: snapshot short read (%lu of %lu bytes, ok=%d) -- "
-                 "state unknown", bytesRead, (unsigned long)sizeof(s), (int)ok);
-        return;
-    }
-    if (s.magic != RELAY_CLIENT_STATUS_MAGIC ||
-        s.version != RELAY_CLIENT_STATUS_VERSION)
-    {
-        RelayLog("status: snapshot magic/version 0x%08lX/%lu != expected "
-                 "0x%08lX/%lu -- a mismatched client mod build; state unknown",
-                 s.magic, s.version,
-                 (unsigned long)RELAY_CLIENT_STATUS_MAGIC,
-                 (unsigned long)RELAY_CLIENT_STATUS_VERSION);
-        return;
-    }
-    unsigned long long now = GetTickCount64();
-    if (s.writeTick > now || now - s.writeTick > RELAY_CLIENT_STATUS_STALE_MS)
-    {
-        RelayLog("status: snapshot stale (writeTick=%llu now=%llu) -- state "
-                 "unknown", s.writeTick, now);
-        return;
-    }
-
-    reply->stateKnown    = 1;
-    reply->sessionActive = s.sessionActive ? 1 : 0;
-    reply->fullscreen    = s.fullscreen ? 1 : 0;
+    if (file == INVALID_HANDLE_VALUE) return rdpstk::Result::Unavailable;
+    LARGE_INTEGER length{};
+    if (!GetFileSizeEx(file, &length) || length.QuadPart != sizeof(RelayClientStatus)) { CloseHandle(file); return rdpstk::Result::Unsupported; }
+    RelayClientStatus state{}; DWORD read = 0;
+    BOOL ok = ReadFile(file, &state, sizeof(state), &read, nullptr); CloseHandle(file);
+    if (!ok || read != sizeof(state) || state.magic != RELAY_CLIENT_STATUS_MAGIC ||
+        state.version != RELAY_CLIENT_STATUS_VERSION || !rdpstk::ValidSnapshotState(state))
+        return rdpstk::Result::Unsupported;
+    if (!rdpstk::Fresh(state.writeTick, GetTickCount64())) return rdpstk::Result::Unavailable;
+    if (state.writerPid != target.pid || state.writerBirth != target.birth)
+        return rdpstk::Result::TargetChanged;
+    reply->known = 1; reply->active = state.sessionActive ? 1 : 0;
+    reply->fullscreen = state.fullscreen ? 1 : 0; reply->iconic = state.iconic ? 1 : 0;
+    reply->targetPid = target.pid; reply->targetBirth = target.birth;
+    reply->snapshotTick = state.writeTick;
+    return rdpstk::Result::Observed;
 }
 
 // ===========================================================================
@@ -237,14 +129,14 @@ static void BuildStatusReply(RelayStatusReply* reply)
 RdpChannelCallback::RdpChannelCallback(ULONG channelId, IWTSVirtualChannel* pChannel)
     : m_refCount(1), m_channelId(channelId), m_channel(pChannel)
 {
+    RelayServerAddRef();
     if (m_channel) m_channel->AddRef();
-    RelayLog("[Ch%lu] channel callback created", m_channelId);
 }
 
 RdpChannelCallback::~RdpChannelCallback()
 {
     if (m_channel) m_channel->Release();
-    RelayLog("[Ch%lu] channel callback destroyed", m_channelId);
+    RelayServerRelease();
 }
 
 HRESULT STDMETHODCALLTYPE RdpChannelCallback::QueryInterface(REFIID riid, void** ppv)
@@ -272,58 +164,61 @@ ULONG STDMETHODCALLTYPE RdpChannelCallback::Release()
     return c;
 }
 
-// A DVC signal arrived from the host mod. Validate it is non-empty, relay its
-// first byte onward (except the status query, which is answered locally with
-// no side effect on the client), then ALWAYS write the status reply back on
-// this still-open channel before the host closes it.
-//
-// The reply is the one deliberate exception to this plugin's original
-// pure-pass-through rule (D-10): it recognizes exactly one byte value
-// (RELAY_CMD_QUERY_STATUS) as its own, and it composes the reply itself. The
-// forwarding path for every real command is byte-as-is, unchanged. The reply
-// also serves as the host's delivery confirmation — the host's read leg
-// blocks on it, which is what closed the write-then-immediate-close delivery
-// race on the host side (the probe's Sleep-before-close, done properly).
-HRESULT STDMETHODCALLTYPE RdpChannelCallback::OnDataReceived(ULONG cbSize, BYTE* pBuffer)
+// Strict request framing; legacy requests have no action side effect.
+HRESULT STDMETHODCALLTYPE RdpChannelCallback::OnDataReceived(ULONG size, BYTE* data)
 {
-    if (!pBuffer || cbSize == 0)
+    try {
+    std::unique_lock<std::mutex> requestLock(m_requestMutex);
+    // A COM Write can synchronously reenter OnClose. Hold a temporary channel
+    // reference, but never hold the state lock across IPC, logging or Write.
+    struct ChannelRef {
+        IWTSVirtualChannel* value = nullptr;
+        ~ChannelRef() { if (value) value->Release(); }
+    } channel;
     {
-        RelayLog("[Ch%lu] OnDataReceived: empty payload -- ignored (nothing to relay)",
-                 m_channelId);
-        return S_OK;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_channel || !data || !size) return E_INVALIDARG;
+        channel.value = m_channel; channel.value->AddRef();
     }
-
-    const BYTE cmd = pBuffer[0];
-    if (cmd == RELAY_CMD_QUERY_STATUS)
-    {
-        RelayLog("[Ch%lu] DVC status query (0x%02X) -- answered locally, "
-                 "deliberately not forwarded (no side effect on the client)",
-                 m_channelId, cmd);
+    // Legacy requests get an unknown-state legacy reply, with NO action.
+    // New hosts use marker 0x7F; old relays/clients cannot interpret it as an action.
+    if (size == 1) {
+        RelayStatusReply legacy{};
+        legacy.magic = RELAY_STATUS_REPLY_MAGIC; legacy.version = RELAY_STATUS_REPLY_VERSION;
+        requestLock.unlock();
+        return channel.value->Write(sizeof(legacy), reinterpret_cast<BYTE*>(&legacy), nullptr);
     }
-    else
-    {
-        RelayLog("[Ch%lu] DVC signal: %lu byte(s), forwarding first byte 0x%02X",
-                 m_channelId, cbSize, cmd);
-        ForwardFirstByte(cmd);
+    if (size != sizeof(rdpstk::Request)) return E_INVALIDARG;
+    rdpstk::Request request; memcpy(&request, data, sizeof(request));
+    if (!rdpstk::ValidRequest(request)) return E_INVALIDARG;
+    rdpstk::Reply reply;
+    reply.requestId = request.requestId; reply.command = request.command;
+    auto state = BuildStatusReply(&reply);
+    auto result = state;
+    if (request.command != RELAY_CMD_QUERY_STATUS) {
+        if (state == rdpstk::Result::Observed &&
+            (request.targetPid != reply.targetPid || request.targetBirth != reply.targetBirth))
+            result = rdpstk::Result::TargetChanged;
+        else if (state == rdpstk::Result::Observed && reply.active)
+            result = ForwardBoundCommand(request);
+        else if (state == rdpstk::Result::Observed) result = rdpstk::Result::Unavailable;
+        RelayLog("channel=%lu command=%u request=%llu result=%lu", m_channelId, request.command, request.requestId, (DWORD)result);
     }
-
-    // Reply on every command — the host reads exactly one reply per send.
-    if (m_channel)
-    {
-        RelayStatusReply reply;
-        BuildStatusReply(&reply);
-        HRESULT hr = m_channel->Write(sizeof(reply),
-                                      reinterpret_cast<BYTE*>(&reply), nullptr);
-        RelayLog("[Ch%lu] status reply written hr=0x%08lX (known=%u active=%u "
-                 "fullscreen=%u)", m_channelId, (unsigned long)hr,
-                 reply.stateKnown, reply.sessionActive, reply.fullscreen);
-    }
-    return S_OK;
+    reply.result = (DWORD)result;
+    // Error results never carry a usable target to the host.
+    if (result != rdpstk::Result::Observed && result != rdpstk::Result::Accepted)
+        reply.known = reply.active = reply.fullscreen = reply.iconic = 0;
+    requestLock.unlock();
+    return channel.value->Write(sizeof(reply), reinterpret_cast<BYTE*>(&reply), nullptr);
+    } catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
+      catch (...) { return E_FAIL; }
 }
 
 HRESULT STDMETHODCALLTYPE RdpChannelCallback::OnClose()
 {
-    RelayLog("[Ch%lu] OnClose", m_channelId);
+    IWTSVirtualChannel* channel;
+    { std::lock_guard<std::mutex> lock(m_mutex); channel = m_channel; m_channel = nullptr; }
+    if (channel) channel->Release();
     return S_OK;
 }
 
@@ -334,14 +229,15 @@ HRESULT STDMETHODCALLTYPE RdpChannelCallback::OnClose()
 RdpRelayPlugin::RdpRelayPlugin()
     : m_refCount(1), m_channelManager(nullptr), m_listener(nullptr)
 {
+    RelayServerAddRef();
     RelayLog("plugin instance constructed (this=0x%p)", this);
 }
 
 RdpRelayPlugin::~RdpRelayPlugin()
 {
-    if (m_listener)       m_listener->Release();
-    if (m_channelManager) m_channelManager->Release();
+    Terminated();
     RelayLog("plugin instance destroyed (this=0x%p)", this);
+    RelayServerRelease();
 }
 
 HRESULT STDMETHODCALLTYPE RdpRelayPlugin::QueryInterface(REFIID riid, void** ppv)
@@ -382,13 +278,30 @@ HRESULT STDMETHODCALLTYPE RdpRelayPlugin::Initialize(IWTSVirtualChannelManager* 
     RelayLog("IWTSPlugin::Initialize called -- mstsc HAS ACTIVATED THE RELAY PLUGIN");
     if (!pChannelMgr) return E_POINTER;
 
-    m_channelManager = pChannelMgr;
-    m_channelManager->AddRef();
-
-    HRESULT hr = m_channelManager->CreateListener(
+    {
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        if (m_initializing || m_channelManager || m_terminated) return E_UNEXPECTED;
+        m_initializing = true;
+    }
+    pChannelMgr->AddRef();
+    IWTSListener* listener = nullptr;
+    HRESULT hr = pChannelMgr->CreateListener(
         RELAY_CHANNEL_NAME, 0,
         static_cast<IWTSListenerCallback*>(this),
-        &m_listener);
+        &listener);
+    if (SUCCEEDED(hr) && !listener) hr = E_UNEXPECTED;
+    {
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        m_initializing = false;
+        if (m_terminated && SUCCEEDED(hr)) hr = E_UNEXPECTED;
+        if (SUCCEEDED(hr)) {
+            m_channelManager = pChannelMgr; m_listener = listener;
+        }
+    }
+    if (FAILED(hr)) {
+        if (listener) listener->Release();
+        pChannelMgr->Release();
+    }
     if (FAILED(hr))
     {
         RelayLog("CreateListener(%s) FAILED hr=0x%08X", RELAY_CHANNEL_NAME, (unsigned)hr);
@@ -413,8 +326,17 @@ HRESULT STDMETHODCALLTYPE RdpRelayPlugin::Disconnected(DWORD dwDisconnectCode)
 HRESULT STDMETHODCALLTYPE RdpRelayPlugin::Terminated()
 {
     RelayLog("IWTSPlugin::Terminated");
-    if (m_listener)       { m_listener->Release();       m_listener = nullptr; }
-    if (m_channelManager) { m_channelManager->Release(); m_channelManager = nullptr; }
+    IWTSListener* listener = nullptr;
+    IWTSVirtualChannelManager* manager = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        m_terminated = true;
+        listener = m_listener; m_listener = nullptr;
+        manager = m_channelManager; m_channelManager = nullptr;
+    }
+    // Releasing a listener may release/reenter its callback.
+    if (listener) listener->Release();
+    if (manager) manager->Release();
     return S_OK;
 }
 
@@ -430,11 +352,15 @@ HRESULT STDMETHODCALLTYPE RdpRelayPlugin::OnNewChannelConnection(
     *pbAccept = FALSE;
     *ppCallback = nullptr;
     if (!pChannel) return E_POINTER;
+    {
+        std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+        if (m_terminated) return E_UNEXPECTED;
+    }
 
     static volatile LONG s_nextId = 0;
     ULONG channelId = (ULONG)InterlockedIncrement(&s_nextId);
 
-    RelayLog("OnNewChannelConnection[Ch%lu] -- host opened the DVC", channelId);
+    // Routine poll channel creation is intentionally silent.
 
     RdpChannelCallback* cb = new (std::nothrow) RdpChannelCallback(channelId, pChannel);
     if (!cb) return E_OUTOFMEMORY;

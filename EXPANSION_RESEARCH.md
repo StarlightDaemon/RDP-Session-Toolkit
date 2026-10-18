@@ -1,5 +1,10 @@
 # Expansion Research — where this toolkit goes next
 
+> Historical assessment of an earlier implementation. For the new proposal,
+> see [Repository review and proposed direction](REPOSITORY_REVIEW.md).
+> In particular, clipboard recovery and DVC status replies now exist, and
+> the sleep-request recommendation below must not be read as a guarantee.
+
 **Date:** 2026-09-01
 **Status:** research and recommendation only. No mod code was written, changed, or
 fixed for this document; nothing was committed or pushed.

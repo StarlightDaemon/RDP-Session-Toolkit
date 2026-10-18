@@ -1508,3 +1508,112 @@ client-state paths, fullscreen control, per-monitor taskbar placement, and
 live theme inversion. Earlier ``not live-tested`` and ``not verified on
 hardware`` statements in D-35 through D-40 are historical build notes
 superseded by this verification.
+
+## D-42: Toolkit setup must not install or upgrade Windhawk
+
+**Date:** 2026-09-18. **Operator-directed distribution boundary.**
+
+The proposed setup program installs toolkit components only and reuses a
+separately installed Windhawk. It must not install or upgrade Windhawk. If a
+required dependency or compatible capability is absent, check before writes,
+explain what is missing, link to official instructions, and allow the user to
+check again after addressing it independently. This does not adopt a particular
+Windhawk prerelease or approve an unvalidated automatic installation path.
+
+Feasibility, reproduced findings, and validation gates live in
+[PACKAGING_RESEARCH.md](../../PACKAGING_RESEARCH.md). Installer implementation
+and the proposed mission statement remain separate future work.
+
+## D-43: First refinement pass uses coordinated, scoped registration
+
+**Date:** 2026-09-18. **Client 0.10.1 / relay 0.2.1 candidate; host unchanged.**
+
+The operator authorized the first refinement pass while remote, preparing a
+candidate for home testing. Keep the installed runtime untouched during this
+work. The staged plan is [REFINEMENT_PLAN.md](../../REFINEMENT_PLAN.md).
+
+Registration now separates the quoted COM launch command from its raw
+`ServerExecutable` identity. The updated client accepts the prior registration
+when the new value is absent, but does not fall back after malformed data or
+access denial. Update the client before migrating registration.
+
+The helper owns values, not registry trees: check the existing path/identity,
+preserve foreign data, scope removal explicitly, and restore earlier values
+after ordinary failures. Report rollback failure separately. New machine
+registration is unsupported; explicit legacy machine removal remains available.
+Empty containers may remain. Concurrent deployment and crash recovery require
+the later installer work; this is not a complete transaction system.
+
+This decision records the implemented candidate design, not live acceptance.
+Use [HOME_TEST.md](../../HOME_TEST.md) for update and rollback order; LOOP-010
+remains open.
+
+## D-44: Session controls use bound protocol v3 and conservative ambiguity refusal
+
+**Date:** 2026-10-16. **Operator-authorized implementation of the top three additions.**
+
+Commands identify the intended mstsc PID and process creation time. Both send
+and receive paths require a sole mstsc process in this Windows session; an
+extra connection dialog also pauses controls. This is an ambiguity guard, not
+multi-session selection. Direct in-process overlay actions remain bound to
+their own frame.
+
+Protocol v3 carries request correlation, capabilities and explicit outcomes.
+New hosts send marker 0x7F, which legacy receivers cannot interpret as an
+action. New relays answer legacy requests with unknown legacy state and never
+forward their actions. New local receivers reject old payloads. Snapshot v3
+adds creation time, uses a separate filename and publishes complete records
+through replacement; old readers cannot consume an ambiguous last-writer
+snapshot. Matching candidate components are required for controls.
+
+Feedback distinguishes acceptance, observed window state, rejection, missing
+or ambiguous peers, incompatibility and uncertain outcomes. No unknown action
+is retried. Failed host polls schedule repaint; local host recovery stays
+independent of relay readiness.
+
+Host work uses one owned bounded queue; unload joins active work and drains
+tracked taskbar callbacks. Client message/force threads are joined. A hung
+event-sink STA or failed dispatcher can require keeping inert module code
+mapped until process exit instead of unloading retained callbacks. COM plugin,
+channel and factory-lock references govern relay shutdown. Relay diagnostics
+use bounded per-user files, with routine poll success silent.
+
+The on-demand diagnostic script reads selected local observations only, excludes
+secrets/command lines/connection-file and clipboard contents, omits endpoint
+names by default, and exports only to an explicitly selected new local file.
+These measures preserve the personal-use trust boundary; they do not establish
+isolation against hostile processes running as the same user.
+
+The current candidate and test procedures are in
+[TOP_THREE_ACCEPTANCE.md](../../TOP_THREE_ACCEPTANCE.md) and
+[probes/runtime/](../../probes/runtime/README.md). Live acceptance belongs to
+LOOP-011; installation/upgrade transactions remain separate under LOOP-010.
+
+## D-45: Review hardening preserves uncertain outcomes and owned callbacks
+
+**Date:** 2026-10-17. **Operator-authorized pre-home-test review and fixes.**
+
+Extend D-44's refusal to multiple RDP frame windows within one process. Frame
+fallback must remain in the current process; process binding must not be undone
+by a global class-name search. Treat malformed state and unconfirmed operations
+as unavailable/unknown, including zero WM_COPYDATA results and partial input.
+Never retry uncertain actions. Temporary snapshot files use exclusive creation.
+
+Do not infer callback release from a failed COM unsubscription or failed
+subclass restoration. Retain ownership and module code on unresolved teardown;
+refuse reuse of a retained stopped module until its process restarts. Bound
+pending taskbar delegates and use a single drain deadline. COM channel state
+locks must not be held across external Write calls; initialization and termination
+must preserve one owner for each listener/manager reference.
+Native window subclasses require their own UI-thread fence and callback drain;
+Windhawk function-hook removal alone does not own those callbacks.
+
+The registered-image check on a caller-supplied WM_COPYDATA sender HWND remains
+an advisory identity check, not authentication against hostile same-user code.
+The existing personal-use trust boundary is unchanged. Diagnostics must preserve
+partial observations and incomplete-inspection findings; supported entry points
+include standalone Windows PowerShell 5.1 as well as PowerShell 7.
+
+Findings and remaining acceptance limits are in
+[IMPLEMENTATION_REVIEW.md](../../IMPLEMENTATION_REVIEW.md); dated verification
+and candidate artifacts belong to WORK_LOG. LOOP-011 retains live acceptance.

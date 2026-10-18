@@ -1,5 +1,24 @@
 # Roadmap
 
+## Current planning proposal
+
+The operator has authorized the top-three additions from
+[BEST_NEXT_ADDITIONS.md](BEST_NEXT_ADDITIONS.md). Diagnostics, action feedback,
+ambiguity refusal and the prerequisite runtime fixes are implemented as a
+candidate under the [refinement plan](REFINEMENT_PLAN.md). Follow
+[TOP_THREE_ACCEPTANCE.md](TOP_THREE_ACCEPTANCE.md) for runtime acceptance.
+Deployment validation and the installer remain later work. Broader feature
+proposals below retain their prior planning status.
+
+The [repository review](REPOSITORY_REVIEW.md) contains the proposed mission,
+source-based expansion constraints, ranked candidates, overhead limits, and
+acceptance gates. Its section 8 is the proposed next-work sequence. These are
+recommendations for discussion, not newly agreed implementation commitments.
+
+The sections below preserve earlier delivery history and design questions.
+Historical testing language is superseded where applicable by D-41 and the
+authoritative entries in [OPEN_LOOPS.md](.raiden/state/OPEN_LOOPS.md).
+
 Backlog of agreed-but-not-yet-built features and scoped-but-open ideas. Unlike
 `DECISIONS.md` (committed architectural decisions with rationale) and
 `OPEN_LOOPS.md` (verification/test work on code that already exists), this
@@ -40,7 +59,7 @@ live-verified by the operator over several days (LOOP-009 resolved):
 The **taskbar thumbnail toolbar** — the mstsc.exe-side buttons under the
 taskbar hover preview, the third of the toolkit's three client presentation
 surfaces — was removed in full
-([D-33](DECISIONS.md#d-33-the-taskbar-thumbnail-toolbar-is-removed-its-rich-status-tooltip-moves-to-the-taskbar-embedded-panel)).
+([D-33](.raiden/state/DECISIONS.md#d-33-the-taskbar-thumbnail-toolbar-is-removed-its-rich-status-tooltip-moves-to-the-taskbar-embedded-panel)).
 Two surfaces remain: the **taskbar-embedded panel** (`explorer.exe`, the main
 one, always visible) and the optional **floating overlay button**
 (`mstsc.exe`, off by default).
@@ -73,7 +92,7 @@ command rows, and the five new button tooltips. LOOP-008 remains the checklist.
 
 - **Restart rdpclip.exe from the host widget, with the clipboard presence
   line** — built
-  ([D-35](DECISIONS.md#d-35-restart-rdpclipexe-from-the-host-widget-plus-a-report-the-negative-only-clipboard-presence-line)).
+  ([D-35](.raiden/state/DECISIONS.md#d-35-restart-rdpclipexe-from-the-host-widget-plus-a-report-the-negative-only-clipboard-presence-line)).
   This was `EXPANSION_RESEARCH.md`'s **#1 recommendation** (§4.1 for the action,
   §4.2 for the line, §6 for the ranking and the sequencing); it moves from
   *recommended* to *built* here, and it is built as that document specified
@@ -119,7 +138,7 @@ the live-test checklist, ordered by how much each one still has riding on a
 real session.
 
 - **Fullscreen/windowed toggle button** — built
-  ([D-14](DECISIONS.md#d-14-fullscreenwindowed-toggle-is-synthesized-ctrlaltbreak-not-an-internal-call)):
+  ([D-14](.raiden/state/DECISIONS.md#d-14-fullscreenwindowed-toggle-is-synthesized-ctrlaltbreak-not-an-internal-call)):
   a thumbnail-toolbar button that sends Remote Desktop's own Ctrl+Alt+Break to
   the foregrounded session window. No transition logic of its own; refuses to
   send if the foreground cannot be acquired. *(v0.9.0: the button now lives on
@@ -128,14 +147,14 @@ real session.
   the foreground and delivers the chord, repeatedly, on both of D-31's success
   paths. LOOP-007 (b) is closed.)*
 - **Session duration / idle-time display** — built
-  ([D-15](DECISIONS.md#d-15-session-duration--idle-display-lives-on-both-surfaces-idle-is-local-input-idle)):
+  ([D-15](.raiden/state/DECISIONS.md#d-15-session-duration--idle-display-lives-on-both-surfaces-idle-is-local-input-idle)):
   a new row on the (fullscreen-only) overlay plus the tooltip of a new
   thumbnail-toolbar status icon (windowed coverage, minute granularity). Idle
   is the client machine's own input idle by design. *(v0.9.0: the tooltip half
   moved to the taskbar-embedded panel's status text, rebuilt there from the
   status snapshot — D-33. The overlay row is unchanged.)*
 - **Connection quality indicator** — built, the most provisional of the five
-  ([D-16](DECISIONS.md#d-16-connection-quality-comes-from-a-second-imstscaxevents-sink-advised-via-a-cocreateinstance-hook--advise-live-confirmed-via-d-29-the-event-itself-has-never-arrived)):
+  ([D-16](.raiden/state/DECISIONS.md#d-16-connection-quality-comes-from-a-second-imstscaxevents-sink-advised-via-a-cocreateinstance-hook--advise-live-confirmed-via-d-29-the-event-itself-has-never-arrived)):
   a real, documented hook point was found (second `IMsTscAxEvents` sink
   advised on the RDP control captured via a `CoCreateInstance` hook; DISPIDs
   resolved at runtime), so it was built rather than left unbuilt — but whether
@@ -148,12 +167,12 @@ real session.
   stayed neutral on every real session — exactly as designed. The report now
   shows on the taskbar-embedded panel, not a thumb-bar icon — D-33.)*
 - **Quick-reconnect shortcut with remembered display settings** — built
-  ([D-17](DECISIONS.md#d-17-one-shared-reconnect-helper-capture-a-relaunch-command-line-launch-from-the-frames-wm_destroy)):
+  ([D-17](.raiden/state/DECISIONS.md#d-17-one-shared-reconnect-helper-capture-a-relaunch-command-line-launch-from-the-frames-wm_destroy)):
   settings-backed preferred mode (fullscreen / windowed at a fixed or the
   current size / all monitors); shared capture-then-relaunch helper; clean
   close via the established WM_CLOSE, relaunch from the frame's WM_DESTROY.
 - **Stuck-session detection with force reconnect** — built
-  ([D-18](DECISIONS.md#d-18-stuck-session-detection-runs-on-its-own-thread-alerts-in-its-own-window-and-never-reconnects-unasked)):
+  ([D-18](.raiden/state/DECISIONS.md#d-18-stuck-session-detection-runs-on-its-own-thread-alerts-in-its-own-window-and-never-reconnects-unasked)):
   `IsHungAppWindow` watchdog on its own thread, on-screen alert with a manual
   Force reconnect (bounded grace, then `TerminateProcess` + relaunch). Never
   reconnects on its own.
@@ -161,7 +180,7 @@ real session.
 ## Consolidated 2026-08-21 (client mod v0.6.0) — one mod, two process branches
 
 The client-side pair became a single mod
-([D-26](DECISIONS.md#d-26-the-two-client-side-mods-are-consolidated-into-one-mstscexe--explorerexe-branches-retiring-the-standalone-embedded-mod)):
+([D-26](.raiden/state/DECISIONS.md#d-26-the-two-client-side-mods-are-consolidated-into-one-mstscexe--explorerexe-branches-retiring-the-standalone-embedded-mod)):
 the standalone `rdp-session-toolkit-taskbar-client-embedded`
 (`explorer.exe`, last v0.2.0) is folded into
 `rdp-session-toolkit-taskbar-client` as its `explorer.exe` branch, and
@@ -180,7 +199,7 @@ changed (two mods → one), not the runtime design.
 - **Taskbar-embedded client presentation mode** — originally built as the
   third, separate Windhawk mod `rdp-session-toolkit-taskbar-client-embedded`
   (`taskbar-integration/client-embedded/`, `explorer.exe` on the client
-  machine; [D-21](DECISIONS.md#d-21-third-mod--the-taskbar-embedded-client-widget-is-its-own-explorerexe-mod-templated-on-the-host-mod));
+  machine; [D-21](.raiden/state/DECISIONS.md#d-21-third-mod--the-taskbar-embedded-client-widget-is-its-own-explorerexe-mod-templated-on-the-host-mod));
   **as of v0.6.0 it is the `explorer.exe` branch of the client mod, D-26**):
   one compact status icon injected into the client machine's own taskbar
   with the host mod's injection code, opening a Win32 GDI flyout with the
@@ -190,8 +209,8 @@ changed (two mods → one), not the runtime design.
   under Windhawk yet — **LOOP-008** in `OPEN_LOOPS.md` is the live-test
   checklist. How the formerly open items were resolved:
   - **Cross-process control path** — two one-way channels into / out of the
-    client mod ([D-22](DECISIONS.md#d-22-status-channel--the-client-mod-writes-a-fixed-layout-snapshot-to-its-own-storage-path-the-widget-derives-that-path-and-treats-the-record-as-potentially-stale),
-    [D-23](DECISIONS.md#d-23-command-channel--a-second-local-message-window-with-a-shared-secret-under-hkcusoftwarerdpsessiontoolkit-citadelrdptaskbarrelay-untouched)):
+    client mod ([D-22](.raiden/state/DECISIONS.md#d-22-status-channel--the-client-mod-writes-a-fixed-layout-snapshot-to-its-own-storage-path-the-widget-derives-that-path-and-treats-the-record-as-potentially-stale),
+    [D-23](.raiden/state/DECISIONS.md#d-23-command-channel--a-second-local-message-window-with-a-shared-secret-under-hkcusoftwarerdpsessiontoolkit-citadelrdptaskbarrelay-untouched)):
     a once-a-second status file in the client mod's storage directory (read
     as potentially stale), and a second message-only window
     `CitadelRdpTaskbarLocalWidget` for commands.

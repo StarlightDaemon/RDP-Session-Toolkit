@@ -35,14 +35,15 @@
 // first byte to it via WM_COPYDATA.
 #define RELAY_TARGET_WINDOW_CLASS L"CitadelRdpTaskbarRelay"
 
-// Diagnostic log file the plugin appends to, written next to the plugin EXE.
+// Log filename under %LOCALAPPDATA%\RDPSessionToolkit; bounded with one backup.
 #define RELAY_LOG_FILENAME L"dvc-relay.log"
 
 // Plugin version, logged at LocalServer startup. Bumped per change like the
 // mods' own version lines. 0.2.0: the status-reply leg (host-bound replies,
 // the un-forwarded status query, and the registry-published status-file
 // location) — the plugin's first change since the 0.1.0 production port.
-#define RELAY_VERSION_STRING "0.2.0"
+// 0.2.1: quoted launch command, executable identity, scoped registration rollback.
+#define RELAY_VERSION_STRING "0.3.1"
 
 // ---------------------------------------------------------------------------
 // Command bytes (host -> relay). Mirrored copies live in the host mod
@@ -62,7 +63,7 @@
 // Client status snapshot (read-only mirror of the client mod's contract).
 //
 // The client mod's mstsc branch writes a LocalWidgetStatus record about once
-// a second to <ClientModStoragePath>\local-widget-status.dat, and publishes
+// a second to <ClientModStoragePath>\local-widget-status-v3.dat, and publishes
 // that directory as a REG_SZ value so this plugin — which is not a Windhawk
 // mod and cannot call Wh_GetModStoragePath — can find the file without
 // guessing at a directory name. This is a MIRRORED COPY of the client mod's
@@ -73,17 +74,17 @@
 // ---------------------------------------------------------------------------
 #define RELAY_STATUS_REG_KEY   L"Software\\RDPSessionToolkit"
 #define RELAY_STATUS_REG_VALUE L"ClientModStoragePath"
-#define RELAY_STATUS_FILENAME  L"local-widget-status.dat"
+#define RELAY_STATUS_FILENAME  L"local-widget-status-v3.dat"
 
 #define RELAY_CLIENT_STATUS_MAGIC   0x53545352u  /* 'RSTS' */
-#define RELAY_CLIENT_STATUS_VERSION 2u
+#define RELAY_CLIENT_STATUS_VERSION 3u
 // A snapshot whose writeTick is older than this (GetTickCount64, same
 // machine) is stale — the client is gone or wedged — and must be reported as
 // state-unknown, mirroring the explorer branch's own staleness rule.
 #define RELAY_CLIENT_STATUS_STALE_MS 4000u
 
 #pragma pack(push, 8)
-// Mirror of the client mod's LocalWidgetStatus, version 2.
+// Mirror of the client mod's LocalWidgetStatus, version 3.
 typedef struct RelayClientStatus {
     unsigned long      magic;
     unsigned long      version;
@@ -100,17 +101,19 @@ typedef struct RelayClientStatus {
     int                fullscreen;
     unsigned long long writeTick;
     wchar_t            hostname[64];
+    unsigned long long writerBirth;
 } RelayClientStatus;
 #pragma pack(pop)
 
 // Layout pin: the client mod asserts the same number on its LocalWidgetStatus,
 // so a drifted mirror fails to build on whichever side changed.
-static_assert(sizeof(RelayClientStatus) == 192,
+static_assert(sizeof(RelayClientStatus) == 200,
               "RelayClientStatus no longer matches the client mod's "
-              "LocalWidgetStatus v2 layout");
+              "LocalWidgetStatus v3 layout");
 
 // ---------------------------------------------------------------------------
-// Status reply (relay -> host). Written back on the still-open
+// Legacy unknown-state reply (relay -> old host); legacy actions are rejected.
+// The v3 request/result contracts live in ToolkitRuntime.h. Sent on the still-open
 // IWTSVirtualChannel after ANY received command, before the host closes the
 // channel. Mirrored copy in the host mod (RelayStatusReply). Same
 // magic+version wire-contract discipline as the client mod's structs.
@@ -129,3 +132,5 @@ typedef struct RelayStatusReply {
     unsigned char reserved;
 } RelayStatusReply;
 #pragma pack(pop)
+
+#include "ToolkitRuntime.h"

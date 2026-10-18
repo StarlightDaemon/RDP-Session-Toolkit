@@ -399,3 +399,231 @@ change, and no `@compilerOptions` change.
 - Relocated `EXPANSION_RESEARCH.md` and `ROADMAP.md` from `.raiden/state/` to
   the repository root because state schema v2 does not recognize them there.
   The subsequent RAIDEN doctor is clean: 10 OK, 0 WARN, 0 FAIL.
+
+## 2026-09-18 — repository explanation, mission review, and expansion planning
+
+- Reviewed the production mods, relay, build/check scripts, probe documentation,
+  existing expansion research, and RAIDEN Instance state against `13430fd`.
+- Added [REPOSITORY_REVIEW.md](../../REPOSITORY_REVIEW.md), the home for this
+  review's proposed mission, architecture explanation, findings, candidate
+  ranking, overhead constraints, and phased acceptance gates. Recommendations
+  are not adopted decisions or implemented features.
+- Corrected selected current-facing README statements and marked the earlier
+  roadmap/research/handoff material as historical where appropriate. Kept the
+  existing decision and verification records intact. Repaired roadmap links
+  to the decision record after its earlier directory relocation.
+- Consulted Microsoft API documentation for COM server lifetime, DVC reads,
+  and power-request semantics; linked relevant sources in the review.
+- Documentation-only work. No runtime changes, mod loading, registration,
+  compilation, or new two-machine verification. Validation: reviewed the diff
+  and checked the new document links and whitespace before delivery.
+
+### Distribution follow-up
+
+- Extended the review with a proposed single-installer route retaining Windhawk.
+  Compared the local installation with the tagged upstream CLI source and
+  recorded the prerelease/compiler limitations, role selections, install/update
+  ownership, and VM validation gate in the review's section 10.
+- No dependency upgrade, installer execution, mod installation, registry write,
+  or runtime migration was performed. Source support for local-file installation
+  is established; end-to-end installation remains to be tested.
+
+## 2026-09-18 — packaging feasibility research and non-invasive probes
+
+- Added [PACKAGING_RESEARCH.md](../../PACKAGING_RESEARCH.md): current upstream
+  CLI/release research, Microsoft platform contracts, deployment findings,
+  long-term architecture review, and a staged validation matrix. Updated the
+  earlier distribution proposal to follow the operator's clarified boundary
+  (D-42); opened LOOP-010 for remaining deployment validation.
+- Added [probes/packaging/](../../probes/packaging/README.md). Read-only local
+  prerequisite inspection found Windhawk 1.7.3 with a compiler but no CLI.
+  All five prerequisite-classification fixtures passed; file presence never
+  claims runtime readiness. The production registration helper, compiled with
+  mocked registry operations, reproduced five recorded problematic behaviors.
+- Both production mods passed the existing compile/link and settings checks.
+  The production relay compiled/linked separately into ignored probe output;
+  its Authenticode status is NotSigned. It was not launched or registered.
+- Upstream sources support local-file installation in alpha.5. This is source
+  evidence, not a live alpha.5 test. The upstream CLI elevation issue is an
+  external report covering alpha.1/alpha.3, not a locally reproduced finding.
+- No production-code changes, registry writes, mod installation, dependency
+  upgrade, or new physical/two-machine verification. Output/fixtures and
+  downloaded upstream source are under ignored `out/packaging-probe/`.
+- Final checks: all three probe scripts parse; local links in the research,
+  repository review, and probe guide resolve; tracked diff whitespace check is
+  clean. No staging, commit, or push was performed.
+
+## 2026-09-18 — first refinement pass and home-test candidate
+
+- Added [REFINEMENT_PLAN.md](../../REFINEMENT_PLAN.md): registration reliability,
+  runtime lifecycle/overhead, session/protocol reliability, deployment experiment,
+  then the toolkit-only installer. Implemented pass 1; later passes remain open.
+- D-43 records client 0.10.1 / relay 0.2.1 registration changes. New launch paths
+  are quoted with a separate raw executable identity; the client retains legacy
+  compatibility. Registration/removal check ownership and scope, preserve foreign
+  values, attempt rollback after write failures, and report incomplete recovery.
+  Host 0.4.0 and the wire protocol are unchanged.
+- Converted the original defect probe into 31 registration regression checks;
+  added 20 checks compiling the actual client path-reader functions with mocked
+  registry reads. All passed, as did five prerequisite fixtures and six safe
+  CLI argument checks. Both production mods compile/link and pass settings
+  checks. The relay builds cleanly. No server or registry mutation was needed.
+- Added [HOME_TEST.md](../../HOME_TEST.md) and
+  [build-refinement-candidate.ps1](../../scripts/build-refinement-candidate.ps1).
+  Final candidate: `out/candidates/refinement-1-20260918-225018-67a58d.zip`, with
+  matching directory, mod sources, relay EXE/source, home guide, manifest, and
+  hashes. All 13 checksummed files match the directory and ZIP. The development
+  EXE is unsigned; compiled mod-check DLLs are not distributed as runtime mods.
+- No Windhawk install/upgrade, live mod reload, production registration change,
+  active-session interruption, staging, commit, or push. Candidate runtime
+  acceptance is pending at home under LOOP-010.
+
+## 2026-10-16 — repository understanding and comparative feature review
+
+- Reviewed the current working tree, including existing uncommitted refinement
+  work, production client/host mods, relay contracts/registration/lifetime,
+  build and candidate scripts, packaging checks, retained probe context, and
+  the existing research and RAIDEN Instance state.
+- Added [BEST_NEXT_ADDITIONS.md](../../BEST_NEXT_ADDITIONS.md), comparing nine
+  open-source/freeware/commercial offerings using first-party sources. Ranked
+  sixteen additive candidates on utility and architectural fit, with concrete
+  next scopes, acceptance criteria, existing-feature reconciliation, deferred
+  alternatives, exclusions, and a separate distribution track.
+- Preserved the active refinement plan and prior decision/loop records.
+  Recommendations are planning proposals, not implemented features or adopted
+  commitments. Added a discoverability pointer in CURRENT_STATE.
+- Documentation only; no production-code edits, installation, registration,
+  mod reload, new runtime tests, staging, commit, or push. Checked the report's
+  local links, score arithmetic, required comparison coverage, and whitespace.
+
+## 2026-10-16 — diagnostics, action feedback and ambiguity guard implementation
+
+- Implemented the operator-authorized top three additions in the current
+  refinement work. D-44 records protocol, targeting, outcome and lifetime
+  choices. LOOP-011 tracks real Explorer/two-endpoint acceptance; LOOP-010
+  retains the separate packaging/deployment gates.
+- Candidate versions are client 0.11.0, host 0.5.0 and relay 0.3.0. Commands
+  require matching PID/creation time and a sole mstsc process; connection
+  dialogs count. Protocol v3 correlates requests/results and refuses legacy
+  actions. Snapshot v3 uses a separate filename and publishes complete closed
+  files through replacement. Local/host feedback distinguishes accepted from
+  observed window state; uncertain actions are not retried.
+- Replaced host detached jobs with one owned bounded worker, joined client
+  message/force threads, tracked taskbar delegates through completion or safe
+  module retention, and repainted failed/expired host state. Clipboard process
+  identity is rechecked on the handle actually terminated. Relay object/channel
+  and factory references now use COM server-process lifetime accounting, per
+  [Microsoft's lifetime guidance](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-coreleaseserverprocess).
+  Relay logs are bounded in user storage and routine polling is silent.
+- Added `scripts/Get-ToolkitDiagnostics.ps1`: read-only local observations,
+  explicit JSON/text output and new-file local export, with default endpoint
+  omission/profile-path redaction. It never reads command secrets, command
+  lines, connection-file contents or clipboard data, starts components,
+  performs registration/repair, or uploads anything.
+- Added [runtime regression checks](../../probes/runtime/README.md): 58 native
+  guard/protocol/worker/publication checks, 22 actual relay lifetime/legacy/log
+  checks and 17 diagnostic parser/classification/privacy checks passed. Real
+  isolated process/window fixtures include an extra unconnected client and a
+  foreign receiver. Concurrent snapshot readers saw no torn records; transient
+  Windows replacement contention retains the previous record, as intended.
+  Tests do not register a COM class or open an RDP connection.
+- Both mods compiled/linked and passed settings checks without warnings; the
+  production relay compiled/linked. Existing 31 mocked registration checks,
+  20 extracted client-path checks and five prerequisite fixtures passed.
+  Six safe CLI argument cases passed. Explicit diagnostic export preserved an
+  existing file, omitted the default endpoint name, and all updated/new
+  PowerShell scripts parsed successfully.
+- Added [TOP_THREE_ACCEPTANCE.md](../../TOP_THREE_ACCEPTANCE.md), updated the
+  candidate builder and current-facing documentation, and retained prior
+  implementation/candidate work. Built
+  `out/candidates/session-reliability-20261016-233237-82f547.zip` and its matching
+  folder. All 15 checksummed files match both directory and ZIP; copied mod
+  sources match the workspace; the version manifest matches the three source
+  components. The development relay is unsigned.
+- No Windhawk install/upgrade, production registration mutation, live mod
+  reload, active-session interruption, staging, commit or push. Remaining
+  validation includes real dispatcher teardown/pinning, foreground controls,
+  mixed versions over DVC, multi-session refusal, visuals and resource cost.
+
+## 2026-10-17 — pre-home-test implementation review and corrections
+
+- Reviewed the new client/host implementation, relay protocol/COM lifetime,
+  targeting and snapshots, diagnostics, candidate packaging and prerequisite
+  registration behavior. Findings and correction details are in
+  [IMPLEMENTATION_REVIEW.md](../../IMPLEMENTATION_REVIEW.md); D-45 records the
+  design constraints. Preserved all preceding uncommitted work, including the
+  registration refinement (its helper hash matches the review baseline).
+- Candidate versions: client 0.11.1, host 0.5.1, relay 0.3.1; protocol remains
+  v3. Corrected failed COM sink unsubscription, native subclass callback
+  draining, failed startup cleanup and restoration, retained-module reuse,
+  reentrant relay close/write, listener initialization/termination ownership,
+  foreign frame fallback and multi-frame ambiguity, DVC buffer/header handling,
+  partial shortcut cleanup and unknown outcomes, feedback sample ordering,
+  clipboard failure reporting, taskbar backlog limits and snapshot validation
+  and temporary-file creation. See the report for scope and residual limits.
+- Expanded diagnostics preserve partial observations after malformed storage
+  paths or incomplete inspection. A fresh Windows PowerShell 5.1 invocation
+  reproduced a parameter-default startup failure that dot-sourced tests and
+  PowerShell 7 masked. Moved root resolution after parameter binding and added
+  standalone 5.1 coverage; both shells now collect successfully.
+- Final isolated regressions passed: 97 native runtime/protocol/target/input/
+  publication/worker checks, 32 actual relay lifecycle/legacy/log checks,
+  nine extracted client lifetime/drain checks, 11 extracted host clipboard
+  recovery checks and 24 diagnostic checks. Existing 31 registration, 20 client
+  path and five prerequisite checks also passed: **229 checks total**, plus the
+  standalone Windows PowerShell 5.1 collection/privacy integration check.
+  Final runtime output is
+  `out/runtime-checks/41867bcc37db452783b7a2f42431f42f/`.
+- Both mods compiled and linked cleanly and passed settings checks. The
+  production relay and copied candidate sources compiled/linked. Six safe CLI
+  cases passed without registration or server activation. Explicit local JSON
+  export omitted endpoint names by default; a repeat export was refused and
+  preserved the original hash. Eight PowerShell scripts parsed, 21 current
+  report/guide local links resolved, and `git diff --check` passed.
+- Replacement artifact:
+  `out/candidates/session-reliability-20261017-221642-19089f.zip` and matching
+  directory. Verified all 16 checksummed files against both directory and ZIP,
+  exact mod/relay/diagnostic source copies, report copy and version manifest.
+  Includes the review and updated acceptance guide. Relay signature is
+  `NotSigned`. Earlier candidate artifacts are retained and superseded for
+  this home-test pass.
+- No Windhawk install/upgrade, production registration writes, live mod reload,
+  RDP connection or session interruption, staging, commit or push. LOOP-011
+  retains real two-endpoint/Explorer acceptance, native callback teardown and
+  retained-module restart behavior, foreground input, visuals and resource
+  measurements. The personal-use same-user IPC trust boundary is unchanged.
+
+## 2026-10-17 — save and package the home update guide
+
+- Saved the operator-requested instructions in
+  [HOME_UPDATE_TEST_ROLLBACK.md](../../HOME_UPDATE_TEST_ROLLBACK.md): per-machine
+  roles and backups, checksum verification, host/client update order, relay
+  registration, initial and extended tests, result capture and ordered rollback.
+  Clarified variable restoration after reboot, portable/custom Windhawk storage,
+  and why registry imports do not replace unregister/restore/register.
+- Linked the guide from README and TOP_THREE_ACCEPTANCE. Updated the candidate
+  builder to include it and make it the bundle README's starting point.
+- Built replacement
+  `out/candidates/session-reliability-20261017-224116-1cb8eb.zip` and matching
+  directory; earlier bundles remain untouched. Verified all 17 checksums in
+  folder and ZIP, complete file inventory, exact guide/acceptance copies,
+  README entry point, and the version manifest. Runtime/source build inputs
+  match the preceding reviewed candidate; component versions are unchanged.
+- Builder and all nine guide PowerShell blocks parsed successfully; the update
+  and rollback snippets were not executed. `git diff --check` passed. No runtime
+  installation, registration change, session interruption, staging, commit or
+  push. Live acceptance remains under LOOP-011.
+
+## 2026-10-17 — prepare the reviewed work for the requested commit and push
+
+- The operator explicitly authorized committing and pushing the implementation
+  and documentation for home access. Confirmed `main` matches `origin/main`
+  before preparing publication; the configured remote uses GitHub SSH and the
+  configured commit identity is the operator's.
+- Included the registration refinements, diagnostics, feedback, ambiguity guard,
+  review fixes, regression probes, research reports, home guide and state
+  continuity. Generated candidates and development outputs remain ignored.
+- Added checkout pull/build instructions to the home guide so the manual ZIP
+  can be recreated after pulling; the builder includes the guide. Runtime
+  sources are unchanged from the reviewed/verified candidate. Live installation
+  and acceptance remain separate under LOOP-011.

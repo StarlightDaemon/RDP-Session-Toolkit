@@ -1,32 +1,9 @@
 // Copyright (c) 2026. MIT License.
 //
-// RdpRelayPlugin.h
-//
-// Client-side RDP Dynamic Virtual Channel (DVC) relay plugin -- PRODUCTION.
-//
-// This is the real relay, adapted from the verified probe
-// (../../probe/plugin/RdpProbePlugin.*). It keeps the probe's exact,
-// two-machine-proven COM/DVC lifecycle (plain Win32 COM, hand-rolled IUnknown
-// refcounting -- no C++/WinRT, so it builds with the Windhawk-bundled mingw
-// clang) and changes only the observable action:
-//
-//   PROBE:  on OnDataReceived, append a line to a log file. Nothing else.
-//   RELAY:  on OnDataReceived, relay the payload's FIRST BYTE as-is (no
-//           translation, no protocol logic) to the client-side Windhawk mod's
-//           existing CitadelRdpTaskbarRelay message-only window via WM_COPYDATA.
-//
-// The plugin is a pure pass-through from the DVC channel to the existing
-// window-message contract. It does not interpret the byte; the client mod's
-// receiver does (0x01 = minimize). See DECISIONS.md D-10.
-//
-// Lifecycle (unchanged from the probe / Microsoft's sample):
-//   1) mstsc reads the AddIns registry, finds our {CLSID}, CoCreateInstance's it
-//   2) COM SCM launches THIS EXE (LocalServer32) -> CoRegisterClassObject
-//   3) IClassFactory::CreateInstance -> RdpRelayPlugin (IWTSPlugin)
-//   4) mstsc calls IWTSPlugin::Initialize -> CreateListener(RELAY_CHANNEL_NAME)
-//   5) host mod opens the channel -> OnNewChannelConnection
-//   6) host mod sends bytes       -> OnDataReceived  (WE FORWARD BYTE 0 HERE)
-//   7) teardown -> OnClose / Terminated
+// Production COM LocalServer: validates versioned DVC requests, binds commands
+// to the sole local mstsc process lifetime, and returns correlated results and
+// client window state. Legacy actions are refused. Objects/channels and factory
+// locks participate in COM server-process lifetime accounting.
 
 #pragma once
 
@@ -38,16 +15,17 @@
 #endif
 
 #include <windows.h>
+#include <mutex>
 #include <tsvirtualchannels.h>  // IWTSPlugin, IWTSListenerCallback, IWTSVirtualChannel*, IID_*
 
-// A LONG lock count that keeps the LocalServer process alive while COM objects
-// exist. Defined in Main.cpp.
-extern volatile LONG g_lockCount;
+// COM server-process ownership and main-thread identity window (Main.cpp).
+void RelayServerAddRef();
+void RelayServerRelease();
+bool InitializeRelayIdentity();
+void DestroyRelayIdentity();
 
-// Append one line to the relay diagnostic log (next to this EXE) and mirror it
-// to OutputDebugString. Defined in RdpRelayPlugin.cpp. Every meaningful
-// lifecycle/forward event routes through here.
-void RelayLog(const char* format, ...);
+// Bounded per-user diagnostic logging, mirrored to OutputDebugString.
+void RelayLog(const char* format, ...) noexcept;
 
 // ---------------------------------------------------------------------------
 // Per-channel callback. One instance per accepted DVC connection.
@@ -70,6 +48,8 @@ private:
     ~RdpChannelCallback();
 
     volatile LONG        m_refCount;
+    std::mutex           m_mutex;
+    std::mutex           m_requestMutex; // serialize requests, never held by OnClose
     ULONG                m_channelId;
     IWTSVirtualChannel*  m_channel;  // AddRef'd for the callback's lifetime
 };
@@ -104,6 +84,8 @@ private:
     ~RdpRelayPlugin();
 
     volatile LONG               m_refCount;
+    std::mutex                  m_lifecycleMutex;
+    bool                        m_initializing = false, m_terminated = false;
     IWTSVirtualChannelManager*  m_channelManager;  // AddRef'd while stored
     IWTSListener*               m_listener;        // AddRef'd while stored
 };

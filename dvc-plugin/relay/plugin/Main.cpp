@@ -12,7 +12,7 @@
 //   -Embedding    same (this is how the COM SCM launches us)
 //   /register     write HKCU registry entries (per-user, no admin)
 //   /unregister   remove them
-//   /machine      use HKLM instead of HKCU for /register (needs admin)
+//   /machine      explicit legacy HKLM cleanup with /unregister (needs admin)
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -31,10 +31,17 @@
 DEFINE_GUID(CLSID_RdpRelay,
     0x6FC96481, 0x9467, 0x496E, 0xBA, 0x33, 0xA2, 0x02, 0xED, 0x05, 0x2F, 0x39);
 
-// Keeps the LocalServer alive while COM class objects / instances are held.
-volatile LONG g_lockCount = 0;
-
 static HANDLE g_shutdownEvent = nullptr;
+static std::atomic<bool> g_bootstrap{true};
+// COM coordinates last-reference shutdown with SCM activation. The bootstrap
+// reference keeps the server available until its first object (or startup timeout).
+void RelayServerRelease() {
+    if (CoReleaseServerProcess() == 0 && g_shutdownEvent) SetEvent(g_shutdownEvent);
+}
+void RelayServerAddRef() {
+    CoAddRefServerProcess();
+    if (g_bootstrap.exchange(false)) RelayServerRelease();
+}
 
 // ---------------------------------------------------------------------------
 // Class factory (plain COM)
@@ -42,7 +49,7 @@ static HANDLE g_shutdownEvent = nullptr;
 class RelayClassFactory final : public IClassFactory
 {
 public:
-    RelayClassFactory() : m_refCount(1) { InterlockedIncrement(&g_lockCount); }
+    RelayClassFactory() : m_refCount(1) {}
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override
     {
@@ -83,24 +90,15 @@ public:
 
     HRESULT STDMETHODCALLTYPE LockServer(BOOL fLock) override
     {
-        if (fLock) InterlockedIncrement(&g_lockCount);
-        else       InterlockedDecrement(&g_lockCount);
+        if (fLock) RelayServerAddRef();
+        else       RelayServerRelease();
         return S_OK;
     }
 
 private:
-    ~RelayClassFactory() { InterlockedDecrement(&g_lockCount); }
+    ~RelayClassFactory() = default;
     volatile LONG m_refCount;
 };
-
-// ---------------------------------------------------------------------------
-// Ctrl handler (only relevant when run interactively for debugging)
-// ---------------------------------------------------------------------------
-static BOOL WINAPI CtrlHandler(DWORD)
-{
-    if (g_shutdownEvent) SetEvent(g_shutdownEvent);
-    return TRUE;
-}
 
 // ---------------------------------------------------------------------------
 // Run as COM server: register the class object and wait.
@@ -111,10 +109,14 @@ static int RunServer()
     if (FAILED(hr)) { RelayLog("CoInitializeEx failed hr=0x%08X", (unsigned)hr); return 1; }
 
     g_shutdownEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    SetConsoleCtrlHandler(CtrlHandler, TRUE);
+    if (!g_shutdownEvent || !InitializeRelayIdentity()) {
+        if (g_shutdownEvent) CloseHandle(g_shutdownEvent);
+        g_shutdownEvent = nullptr; CoUninitialize(); return 1;
+    }
+    CoAddRefServerProcess(); // bootstrap, released once first object is alive
 
     RelayClassFactory* factory = new (std::nothrow) RelayClassFactory();
-    if (!factory) { CoUninitialize(); return 1; }
+    if (!factory) { RelayServerRelease(); DestroyRelayIdentity(); CloseHandle(g_shutdownEvent); CoUninitialize(); return 1; }
 
     DWORD cookie = 0;
     hr = CoRegisterClassObject(
@@ -124,7 +126,8 @@ static int RunServer()
     if (FAILED(hr))
     {
         RelayLog("CoRegisterClassObject failed hr=0x%08X", (unsigned)hr);
-        CoUninitialize();
+        RelayServerRelease(); DestroyRelayIdentity(); CloseHandle(g_shutdownEvent);
+        g_shutdownEvent = nullptr; CoUninitialize();
         return 1;
     }
 
@@ -133,19 +136,22 @@ static int RunServer()
     {
         RelayLog("CoResumeClassObjects failed hr=0x%08X", (unsigned)hr);
         CoRevokeClassObject(cookie);
-        CoUninitialize();
+        RelayServerRelease(); DestroyRelayIdentity(); CloseHandle(g_shutdownEvent);
+        g_shutdownEvent = nullptr; CoUninitialize();
         return 1;
     }
 
     RelayLog("LocalServer v" RELAY_VERSION_STRING " running, class object "
              "registered (cookie=%lu) -- waiting for mstsc", cookie);
 
-    // Live until the shutdown event fires. mstsc holds a reference for the life
-    // of the RDP session; the process is reaped when the session/COM releases it.
-    WaitForSingleObject(g_shutdownEvent, INFINITE);
+    if (WaitForSingleObject(g_shutdownEvent, 30000) == WAIT_TIMEOUT) {
+        if (g_bootstrap.exchange(false)) RelayServerRelease();
+        WaitForSingleObject(g_shutdownEvent, INFINITE);
+    }
 
     RelayLog("LocalServer shutting down");
     CoRevokeClassObject(cookie);
+    DestroyRelayIdentity();
     CloseHandle(g_shutdownEvent);
     g_shutdownEvent = nullptr;
     CoUninitialize();
@@ -169,28 +175,39 @@ int main(int argc, char* argv[])
         else if (lstrcmpiA(argv[i], "/?") == 0 || lstrcmpiA(argv[i], "-h") == 0 ||
                  lstrcmpiA(argv[i], "/help") == 0)
         {
-            printf("Usage: dvc-relay-plugin.exe [/register [/machine] | /unregister]\n");
+            printf("Usage: dvc-relay-plugin.exe [/register | /unregister [/machine]]\n");
             printf("  (no args)    run as COM server (also how the COM SCM launches it)\n");
             printf("  /register    write per-user (HKCU) AddIn + LocalServer32 entries\n");
-            printf("  /machine     with /register, use HKLM instead (requires admin)\n");
-            printf("  /unregister  remove the entries from both HKCU and HKLM\n");
+            printf("  /machine     with /unregister only, clean owned legacy HKLM values\n");
+            printf("  /unregister  remove owned values from HKCU (default)\n");
             return 0;
+        }
+        else {
+            printf("Unknown argument: %s (use /help)\n", argv[i]);
+            return 2;
         }
     }
 
-    if (doRegister)
-    {
-        bool ok = RegistryHelper::Register(perUser);
-        printf("Registration %s (%s)\n", ok ? "succeeded" : "FAILED",
-               perUser ? "HKCU/per-user" : "HKLM/machine");
-        if (!ok && !perUser) printf("  (HKLM requires an elevated/admin prompt)\n");
-        return ok ? 0 : 1;
+    if ((doRegister && doUnregister) || (embedding && (doRegister || doUnregister)) ||
+        (!perUser && !doUnregister)) {
+        printf("Invalid combination. /machine is supported only for explicit legacy removal.\n");
+        return 2;
     }
-    if (doUnregister)
+    if (doRegister || doUnregister)
     {
-        bool ok = RegistryHelper::Unregister();
-        printf("Unregistration %s\n", ok ? "succeeded" : "FAILED");
-        return ok ? 0 : 1;
+        const auto result = doRegister ? RegistryHelper::Register(perUser) :
+                                         RegistryHelper::Unregister(perUser);
+        printf("%s %s (%s), Windows error=%ld\n",
+            doRegister ? "Registration" : "Unregistration",
+            result.ok() ? "succeeded" : "FAILED",
+            perUser ? "HKCU/per-user" : "HKLM/machine", result.error);
+        if (result.conflict)
+            printf("Existing registration has a different path, identity, or format; no values changed.\n"
+                   "Remove it using its original executable before changing locations.\n");
+        if (result.rollbackError != ERROR_SUCCESS)
+            printf("ROLLBACK INCOMPLETE, Windows error=%ld. Inspect registration before retrying.\n",
+                result.rollbackError);
+        return result.ok() ? 0 : (result.rollbackError != ERROR_SUCCESS ? 3 : 1);
     }
 
     (void)embedding;  // both embedding and no-args run the server

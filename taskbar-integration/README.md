@@ -1,5 +1,13 @@
 # taskbar-integration
 
+**Current reliability candidate:** client 0.11.1 and host 0.5.1 implement bound
+protocol v3 controls, action feedback and multiple-client refusal. Use relay
+0.3.1 for cross-machine controls. The local status file is now
+`local-widget-status-v3.dat`; commands include PID and creation time. See
+[acceptance and rollback](../TOP_THREE_ACCEPTANCE.md). Earlier version-specific
+descriptions below preserve the baseline history; the old one-byte receiver
+protocol is not accepted by the new candidate.
+
 The Windhawk-mod side of the toolkit. Holds two mod source files in sibling
 subfolders — one per side of the RDP connection:
 

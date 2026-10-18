@@ -1,5 +1,28 @@
 # dvc-plugin / relay
 
+**0.3.1 session-reliability candidate:** protocol v3 accepts strict framed
+requests and returns correlated results and target identity. Actions require
+a sole mstsc process in this Windows session and a matching PID/creation-time
+snapshot and receiver. Legacy action requests receive unknown legacy state
+without executing anything; the matching host reports incompatible peers.
+Use client 0.11.1 and host 0.5.1. See
+[acceptance and rollback](../../TOP_THREE_ACCEPTANCE.md).
+
+The server now accounts for plugin/channel objects and factory locks through
+COM's server-process reference functions and exits after the final release.
+Its identity window belongs to the main server thread. Logs are capped at
+1 MiB current plus 1 MiB backup under `%LOCALAPPDATA%\RDPSessionToolkit`;
+routine polling is silent. The old executable-adjacent log is left untouched.
+
+The following notice and transport description preserve the preceding
+registration-refinement candidate's history. Protocol v3's current contracts
+are in `common/ToolkitRuntime.h`; its snapshot mirror is in `common/RelayIds.h`.
+
+**0.2.1 refinement candidate:** registration behavior changed; runtime transport
+is unchanged. Use client 0.10.1 before writing the new registration format.
+The candidate is compiled and regression-tested, awaiting the
+[home test](../../HOME_TEST.md).
+
 The **production** DVC relay plugin — the real component the throwaway
 [`probe/`](../probe/) existed to de-risk. It is a client-side, out-of-process
 COM `LocalServer32` plugin that `mstsc` activates from the per-user `AddIns`
@@ -58,9 +81,11 @@ client mod's relay receiver.
 
 WM_COPYDATA carries this plugin's own hidden message-only window as `wParam`, so
 the client mod's receiver can resolve this process's id and confirm its image
-path is exactly the EXE registered under
-`HKCU\Software\Classes\CLSID\{6FC96481-…}\LocalServer32`. Messages from any other
-sender are rejected (log-and-ignore). See `DECISIONS.md` D-11.
+path matches `ServerExecutable` under
+`HKCU\Software\Classes\CLSID\{6FC96481-…}\LocalServer32`. Client 0.10.1 also
+accepts supported legacy defaults when this value is absent. This is a path
+guard, not proof against a hostile process supplying another window's HWND.
+See `DECISIONS.md` D-11 and the packaging research's trust discussion.
 
 ## Register / build
 
@@ -70,16 +95,25 @@ cd dvc-plugin\relay
 .\bin\dvc-relay-plugin.exe /register # per-user (HKCU), no admin
 ```
 
-Registration writes exactly the same two per-user entries the probe did, under
-this plugin's own AddIn name / CLSID. `/unregister` removes them. Restart
-`mstsc` after registering (the `AddIns` registry is read when the client starts
-a connection).
+Registration writes three values: the AddIn `Name`, quoted `LocalServer32`
+default, and unquoted `ServerExecutable`. `/unregister` removes only owned
+values in HKCU; it retains empty keys and unrelated data. Conflicting paths,
+identities, or malformed values stop before mutation. Failures restore earlier
+values where possible and report incomplete rollback separately. This is not
+a crash-atomic transaction; serialize deployment operations.
+
+`/register /machine` is unsupported because the client authenticates against
+HKCU. `/unregister /machine` is explicit legacy cleanup only. Exit codes are
+0 success, 1 operation failure, 2 invalid arguments, and 3 incomplete rollback.
+An executable at a different path cannot silently overwrite or remove the
+existing registration. For the refinement candidate, follow the linked home
+checklist rather than registering a second copy from a build folder.
 
 ## Provenance
 
 Adapted directly from the verified probe (`../probe/`), which was itself adapted
 from [`microsoft/rdp-dvc-plugin-samples`](https://github.com/microsoft/rdp-dvc-plugin-samples)
-(`Simple/cpp`). The COM/DVC lifecycle is unchanged from the probe; the only
-behavioral change is the observable action (forward a byte via `WM_COPYDATA`
-instead of writing a log line). Built and confirmed to compile+link cleanly with
+(`Simple/cpp`). The COM/DVC server lifetime still follows the probe; production
+adds command forwarding, status replies, and the 0.2.1 registration changes.
+Built and confirmed to compile+link cleanly with
 **Windhawk's bundled clang** (`-static`, plain Win32 COM).
