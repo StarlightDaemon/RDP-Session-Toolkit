@@ -733,3 +733,28 @@ change, and no `@compilerOptions` change.
   `git diff --check` passed. Only the three requested documents and this dated
   review record changed; no runtime source or prerelease asset was changed,
   and no new runtime test, installation, registration or live reload occurred.
+
+## 2026-10-17 — reconcile component READMEs with implementation and RC1
+
+- Reviewed taskbar-integration/README.md and dvc-plugin/README.md against current
+  mod metadata, shared runtime/snapshot contracts, relay forwarding, registration,
+  logging/lifetime code, build scripts, D-41 through D-45 and published release
+  metadata. Replaced obsolete snapshot/one-byte protocol instructions and
+  unqualified historical live-test claims with the current matched candidate.
+- Documented the client process branches, host-local recovery, conservative
+  target refusal, feedback uncertainty, owned work/unload limits and advisory
+  same-user sender checks. Corrected the local receiver self-test's bound/timed
+  behavior and result logging. Clarified the relay's shared compiler toolchain,
+  per-user registration scope, bounded user-local logs and retired probe role.
+- Linked RC1, the ZIP, standalone guide and release checksums from both READMEs.
+  Kept the earlier baseline distinct from candidate acceptance and described the
+  release-tag/refreshed-asset provenance through existing manifest/log references.
+  Formal acceptance and deployment dispositions remain in OPEN_LOOPS.
+- Verified 29 local links/anchors, four exact release URLs, component versions,
+  snapshot freshness/protocol and self-test claims against source; both
+  PowerShell blocks parsed without execution. GitHub still reports a published,
+  non-draft prerelease with the previously recorded asset names, sizes and
+  digests. `git diff --check` passed. Only the two requested READMEs and this
+  review record changed. No runtime source, release asset, installation,
+  registration or live session changed; runtime tests were not rerun for this
+  documentation-only update.
