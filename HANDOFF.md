@@ -1,300 +1,137 @@
 # Project Handoff — RDP Session Toolkit
 
-> Historical brainstorming handoff from before the production components were
-> built. Use [README.md](README.md) for usage and
-> [REPOSITORY_REVIEW.md](REPOSITORY_REVIEW.md) for the repository explanation
-> and proposed expansion plan. The implementation-status claims below are
-> preserved as historical context, not current instructions.
+This is a personal-use Windows 11 toolkit with implemented production components
+and a published home-test candidate. The probe-only brainstorming handoff is
+preserved in Git. Start with [README.md](README.md) for versions/features/downloads
+and [CURRENT_STATE.md](.raiden/state/CURRENT_STATE.md) for continuity. Agents must
+follow the root [AGENTS.md](AGENTS.md) startup and write boundaries.
 
-## Briefing for a brainstorming & actuation partner
+## Runtime map
 
-> **Who you are (the agent reading this):** a thinking partner in a plain chat —
-> no filesystem, no repo, no build tools. This document is your entire context.
-> Your job is to help **brainstorm the design** and **drive actuation** (decide
-> and sequence the next concrete steps). You do not need to write code; you need
-> to reason well about a Windows systems-integration project and ask sharp
-> questions. Everything you need to be useful is below. Where this document says
-> something is **undecided**, that's an invitation to help decide it — not a gap
-> to paper over.
+| Source entry point | Responsibility |
+|---|---|
+| [Client mod](taskbar-integration/client/rdp-session-toolkit-taskbar-client.wh.cpp) | One Windhawk mod with mstsc.exe and local explorer.exe branches |
+| [Host mod](taskbar-integration/host/rdp-session-toolkit-taskbar-host.wh.cpp) | Remote explorer.exe widget, WTS session facts, local recovery and DVC requests |
+| [Relay plugin](dvc-plugin/relay/plugin/RdpRelayPlugin.cpp) | Client COM DVC plugin, framing, forwarding and replies |
+| [Relay process](dvc-plugin/relay/plugin/Main.cpp) | COM server lifetime, logging, command line and registration |
+| [Relay contracts](dvc-plugin/relay/common/RelayIds.h) | Production identifiers and snapshot mirror |
+| [Runtime helpers](dvc-plugin/relay/common/ToolkitRuntime.h) | Canonical protocol, targeting, validation and worker helpers |
+| [Diagnostics](scripts/Get-ToolkitDiagnostics.ps1) | Read-only local observations and explicit local export |
 
----
+The mstsc branch owns connection-bar hiding, optional overlay, watchdog, quality
+sink, receivers and status publication. Its local Explorer branch injects the
+primary taskbar panel. Status updates independently of overlay/watchdog visibility.
+There is no separate embedded mod, thumbnail toolbar or duration clock. Reconnect
+and Force reconnect share one opt-in setting; the overlay is also off by default.
 
-## 1. The one-paragraph goal
+The host widget gets session state and connecting client name from WTS.
+Disconnect and Restart Clipboard are local, RDP-gated actions independent of
+relay readiness. Clipboard recovery verifies process image/session and actual
+termination; helper presence never means copy/paste health.
 
-Put a **live widget on the Windows taskbar of the RDP *client* machine** that
-reflects **state from inside the remote RDP session**, wired together over an
-**RDP Dynamic Virtual Channel (DVC)**. This is the more ambitious companion to an
-existing, shipped Windhawk mod ("Hide RDP Connection Bar") that simply hides the
-RDP connection bar overlay inside `mstsc.exe`. This project is
-**personal-use-primarily**, Windows 11, and deliberately higher-trust than the
-original mod.
+## Data and action paths
 
----
+1. The mstsc branch publishes `local-widget-status-v3.dat` in client mod storage.
+   The local panel and relay validate identity, freshness and canonical fields.
+   Publication replaces a whole record through an exclusively created temporary
+   file; failed replacement leaves the prior generation to expire.
+2. Local panel actions use the separate `CitadelRdpTaskbarLocalWidget` message
+   window, a shared HKCU secret and bounded WM_COPYDATA sends. The mstsc branch
+   validates the bound target and handles the action.
+3. Host peer controls open the production DVC, send a framed request and read a
+   correlated reply before closing. The client COM relay finds the receiver,
+   forwards a target-bound command and returns result/state. Periodic host
+   queries also return client window state.
 
-## 2. Why this is its own repo (the trust boundary)
+Production identifiers live in RelayIds.h, distinct from the retired probe.
+The [probe test record](dvc-plugin/TESTING.md) already documents activation and
+signal delivery. Do not re-register the probe for candidate deployment. The
+implemented architecture carries controls and client state, not remote-app
+state mirrored into the local taskbar.
 
-The original "Hide RDP Connection Bar" is a narrow, easily-audited UI patch that
-only tweaks window behavior inside `mstsc.exe`. This project is different in kind:
-it introduces a **native standalone executable that registers as a COM server and
-can act on a live RDP session** — a materially larger attack surface. It was split
-into its own repository specifically to keep that trust distinction visible rather
-than quietly expanding the footprint of the simple mod. Keep this framing in mind:
-**"is this worth the added trust cost?" is a legitimate recurring question**, not a
-settled matter.
+## Contracts to preserve
 
----
+- Protocol v3 binds requests to PID and creation time and correlates replies.
+  Legacy actions have no fallback. The guard counts all mstsc processes in the
+  same Windows session, including unconnected dialogs, and checks frames and
+  receivers. Ambiguity pauses peer controls; it does not choose a session.
+- Feedback separates accepted requests from observed state. Shortcut delivery,
+  disconnect/reconnect acceptance and uncertain clipboard work must not be
+  presented as proven final outcomes. Never retry an uncertain action automatically.
+- The marked ToolkitRuntime.h block is mirrored verbatim in both standalone
+  mods so each stays installable as one file. Update the canonical header and
+  mirrors together. Regression checks compare them and compile actual snapshot
+  layouts, including field offsets.
+- Host jobs use an owned bounded queue; client workers are owned. Taskbar
+  delegates/native callbacks need bounded admission and teardown accounting.
+  Failed COM unsubscription or unresolved callback cleanup can retain references
+  and module code until process exit. If stopped code is retained, restart the
+  affected process before enabling again. Live lifecycle acceptance is essential.
+- Relay shutdown follows plugin/channel/factory references and must tolerate
+  reentrant close/write. Routine polls are silent; logs are bounded under
+  `%LOCALAPPDATA%\RDPSessionToolkit`.
+- Registration is per-user HKCU, with quoted LocalServer32 command and raw
+  ServerExecutable identity. Preserve foreign values, reject conflicting
+  ownership and scope rollback/removal. There is no default HKLM fallback; new
+  machine registration is unsupported. Explicit machine removal supports legacy
+  cleanup. This is not a complete deployment transaction.
 
-## 3. Target architecture (planned — three parts + a wire)
+These are implementation notes; rationale and supersession belong in D-43
+through D-45 in [DECISIONS.md](.raiden/state/DECISIONS.md).
 
+## Security and compatibility
+
+The personal-use same-user trust boundary remains. WM_COPYDATA's sender HWND is
+caller-supplied; the image-path check is advisory, not authentication against
+hostile same-user code. The local secret and user-writable snapshot do not create
+that isolation. Preserve UIPI refusal rather than opening cross-integrity message
+delivery. See [IMPLEMENTATION_REVIEW.md](IMPLEMENTATION_REVIEW.md).
+
+Diagnostics omit endpoint names by default, never collect command secrets,
+command lines, .rdp contents or clipboard contents, and neither repair nor upload.
+Exports require a new explicitly selected file. Source/EXE/receiver presence does
+not prove loaded versions or taskbar injection.
+
+The candidate is Windows x64 with Windows 11 taskbar integration. Windhawk's
+bundled MinGW clang builds both mods and relay. The mods use C++/WinRT for
+taskbar/XAML work; the relay uses plain Win32 COM and static linking. The old
+handoff's blanket claim that the toolchain lacks C++/WinRT is obsolete.
+
+## Validation and next work
+
+[Session reliability RC1](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/tag/session-reliability-rc.1)
+provides the built relay, mod sources and guide. Its tag identifies the runtime
+implementation; the refreshed asset manifest records the later documentation
+revision. Exact revisions/checksums and dated results live in
+[WORK_LOG.md](.raiden/state/WORK_LOG.md). The relay is unsigned; this is a manual
+candidate, not an installer.
+
+Local regression and compile/link checks passed. They do not exercise Explorer
+injection/dispatchers, real two-endpoint DVC activation, foreground input, visuals
+or installed resource use. Earlier baseline evidence is scoped by
+[D-41](.raiden/state/DECISIONS.md#d-41-operator-verification-closes-the-current-live-test-batch).
+Use [HOME_UPDATE_TEST_ROLLBACK.md](HOME_UPDATE_TEST_ROLLBACK.md) for operator steps
+and [TOP_THREE_ACCEPTANCE.md](TOP_THREE_ACCEPTANCE.md) for the extended matrix.
+
+Continue through LOOP-011/LOOP-002 in [OPEN_LOOPS.md](.raiden/state/OPEN_LOOPS.md)
+for candidate evidence and LOOP-010 for deployment gates. A session chooser and
+broader proposals need separate decisions. Follow [ROADMAP.md](ROADMAP.md),
+[REFINEMENT_PLAN.md](REFINEMENT_PLAN.md) and [PACKAGING_RESEARCH.md](PACKAGING_RESEARCH.md)
+before installer work. D-42 requires independently installed Windhawk.
+
+For source changes, use [runtime checks](probes/runtime/README.md) and
+[packaging probes](probes/packaging/README.md). From the repository root:
+
+```powershell
+./probes/runtime/run-checks.ps1
+./taskbar-integration/compile-check.ps1
+./dvc-plugin/relay/build.ps1
 ```
-   REMOTE SESSION HOST                         CLIENT MACHINE
-   (what you RDP *into*)                        (where mstsc runs)
 
-  ┌───────────────────────┐                  ┌────────────────────────┐
-  │ Remote-side Windhawk   │                  │ Client-side Windhawk   │
-  │ mod (in explorer.exe)  │                  │ mod (in mstsc.exe)     │
-  │  - detects state       │                  │  - listens for a       │
-  │    change              │                  │    window message      │
-  │  - pushes it out ──────┼───── DVC ───────►│  - updates a taskbar   │
-  │    over the channel    │   (dynamic       │    widget              │
-  └───────────────────────┘   virtual        └───────────▲────────────┘
-                               channel)                   │ window message
-                                                          │
-                                              ┌───────────┴────────────┐
-                                              │ DVC relay plugin        │
-                                              │ (standalone COM EXE)    │
-                                              │  - receives DVC signal  │
-                                              │  - relays to the mod    │
-                                              └─────────────────────────┘
-```
-
-1. **Client-side Windhawk mod** (`taskbar-integration/`, in `mstsc.exe`) — listens
-   for a window message and updates a taskbar widget. *Not built.*
-2. **Remote-side Windhawk mod** (`taskbar-integration/`, in `explorer.exe` on the
-   session host) — detects state and pushes it out over the DVC. *Not built.*
-3. **DVC relay plugin** (`dvc-plugin/`, standalone EXE on the client) — receives
-   the DVC signal and hands it to the client-side mod via a window message.
-   *A proof-of-mechanism probe of this is built; the real relay is not.*
-
-Plain-language flow: *something changes on the remote desktop → remote mod sends
-it down the DVC → DVC plugin on the client picks it up → hands it to the client
-mod via a window message → client mod updates the local taskbar.*
-
----
-
-## 4. Ground truth — what is actually built right now
-
-Only **one** thing is built, and it is deliberately a **throwaway proof**, not a
-piece of the final product:
-
-**A DVC "probe"** (`dvc-plugin/probe/`) whose sole purpose is to answer the single
-riskiest unknown in the whole plan:
-
-> Does `mstsc` actually **activate** an out-of-process plugin that's registered
-> under the client's `AddIns` key in the `{CLSID}` / `LocalServer32`
-> (out-of-process) form, and does that plugin actually **receive a DVC signal**
-> sent from inside the RDP session?
-
-It has three parts:
-- a **client plugin** — an out-of-process COM LocalServer EXE implementing the DVC
-  plugin interfaces; on receiving *any* bytes it appends a timestamped line to a
-  log file (the simplest observable proof);
-- a **server-side trigger** — a tiny standalone EXE that opens the DVC and sends a
-  trivial ASCII payload;
-- a **TESTING.md** with the exact operator procedure.
-
-It was **adapted from Microsoft's official reference**,
-`microsoft/rdp-dvc-plugin-samples` (the `Simple/cpp` client-plugin / server-trigger
-pair), which uses the same out-of-process COM LocalServer model this project chose.
-
-**The probe payload is meaningless on purpose.** It proves the pipe works, not what
-travels through it.
-
----
-
-## 5. Proven vs. unproven — be precise about this
-
-**Verified locally (single machine, no admin):**
-- Compiles and links cleanly with the target toolchain.
-- `/register` writes the correct **per-user (HKCU)** registry entries from a
-  **non-elevated** prompt; `/unregister` cleans them up. (The "no admin needed"
-  claim from earlier investigation was re-confirmed against the actual build, not
-  assumed.)
-- The COM server starts, `CoRegisterClassObject` succeeds, and it writes its log.
-- The trigger's send path executes down to `WTSVirtualChannelOpenEx` (it fails with
-  a benign error *only* because there's no RDP session on a local console — the code
-  path itself is exercised).
-
-**NOT yet verified (this is the gating unknown):**
-- That `mstsc` *actually activates* the plugin, and that the DVC signal *actually
-  arrives*. This **inherently requires a live two-machine RDP session** and cannot
-  be tested in a dev sandbox. Until an operator sees the "signal received" line in
-  the log on real hardware, the mechanism is **"built and plausible," not
-  "proven."** Everything downstream in the plan rests on this.
-
-**Treat step 1 of any roadmap as: confirm the probe on real hardware.** If it
-fails, the architecture — not just the code — may need to change.
-
----
-
-## 6. Locked-in technical facts & decisions (so we don't relitigate them)
-
-- **Out-of-process, not in-process.** The DVC plugin runs as a separate process
-  from `mstsc.exe` (COM `LocalServer32`), not injected in-process, for crash
-  isolation — matching Microsoft's own documented rationale: a fault in the plugin
-  must not take down the RDP client. (This also gives it its own build/signing
-  pipeline, distinct from the Windhawk mods.)
-- **Registration is HKCU, per-user, no admin.** The plugin registers itself under
-  `HKCU\Software\Microsoft\Terminal Server Client\Default\AddIns\<name>` with the
-  **bare `{CLSID}`** value (not a `path.dll:{CLSID}` string), plus
-  `HKCU\Software\Classes\CLSID\{…}\LocalServer32` → EXE path. The bare-`{CLSID}` form
-  is what makes `mstsc` use normal COM activation → `LocalServer32` → a separate
-  process. Confirmed working non-elevated.
-- **Toolchain reality:** the compiler in use is **Windhawk's bundled clang**, which
-  is a **mingw-targeting clang** (`x86_64-w64-windows-gnu`), **not MSVC**.
-  Consequences that will recur:
-  - Its sysroot **does** ship the needed DVC/WTS/COM headers
-    (`tsvirtualchannels.h`, `wtsapi32.h`, etc.), so native C++ DVC/COM code builds
-    with it directly — no Visual Studio / Windows SDK required.
-  - It has **no C++/WinRT** (`winrt::implements<>`, `winrt::com_ptr<>`), so
-    Microsoft's WinRT-flavored sample had to be re-expressed as **plain Win32 COM**
-    (hand-rolled `IUnknown` refcounting). The final relay plugin should stay on
-    plain Win32 COM for the same reason.
-  - EXEs **must be built `-static`**, or they fail to launch (missing clang runtime
-    DLLs) when COM/`mstsc` starts them from a foreign working directory.
-- **Windhawk mods are C++** compiled by that same clang — so the whole stack (mods
-  + relay plugin) is one language and one compiler. The sibling
-  "Hide RDP Connection Bar" repo already builds successfully this way and already
-  contains reusable taskbar-side patterns (e.g. a thumbnail toolbar with
-  Minimize/Restore rows, drag-to-reposition UI).
-- **Probe identifiers** (may or may not carry into production): DVC channel name
-  `dvc::taskbar::probe`, CLSID `{3194520D-DE59-4432-95B5-D5CB4FAFC30E}`, AddIn name
-  `HideRdpBarTaskbarDvcProbe`. Client and trigger share one header so these can't
-  drift.
-
----
-
-## 7. The brainstorming agenda — open design questions
-
-This is the heart of the handoff. These are genuinely open and worth thinking hard
-about. Grouped by area.
-
-### A. The relay hop: DVC plugin → client-side mod
-The plugin (its own process) has to get the signal into the mod (living inside
-`mstsc.exe`). The plan says "a window message." Things to reason about:
-- **Which mechanism?** `RegisterWindowMessage` + a targeted `PostMessage`, or
-  `WM_COPYDATA` (which can carry a payload, not just a ping), or step outside window
-  messages entirely (named pipe, shared memory + event, memory-mapped file).
-  Window messages are simplest but carry the least data and have delivery caveats.
-- **How does the plugin find the mod's window?** The mod would need to create a
-  hidden message-only window with a discoverable class/title, or register a known
-  name. Race: what if the signal arrives before the mod's window exists?
-- **Integrity levels / UIPI.** `mstsc` and the plugin may run at different integrity
-  levels; Windows blocks cross-level window messages by default. Does the receiver
-  need `ChangeWindowMessageFilterEx`? Does an out-of-process plugin dodge or worsen
-  this vs. an in-process one?
-- **Coupling of identity:** how does the plugin know *which* `mstsc` window/session
-  a given signal belongs to, if more than one RDP session is open?
-
-### B. The payload & wire protocol
-- **This is the biggest genuinely-undecided product question: what state does the
-  widget actually reflect?** The READMEs only say "state from the remote session."
-  Concretely — is it the remote foreground window? A count of remote notifications?
-  Remote taskbar contents mirrored? A specific app's status? **Nothing downstream can
-  be firmly designed until this is pinned down.** Push on it.
-- Once the *what* is known: wire format, versioning, and framing. DVC chunks around
-  ~1600 bytes and fragments larger messages (`CHANNEL_FLAG_FIRST/LAST`); the WTS
-  read API reassembles automatically but a file-handle path does not. How much data,
-  how often, how latency-sensitive?
-
-### C. Remote-side detection (what generates the signal)
-- The remote mod runs in `explorer.exe`. **What does it watch** to know state
-  changed? (Shell hooks, foreground-window changes, taskbar/notification state,
-  specific window events.)
-- **Fold the sender into the mod.** The probe's trigger is a standalone EXE; in
-  production the send side (`WTSVirtualChannelOpenEx` + write) needs to live inside
-  the remote Windhawk mod. Any constraints on calling WTS channel APIs from within
-  `explorer.exe`?
-
-### D. Lifecycle & robustness
-- The probe plugin currently **lives until the session ends** (no idle shutdown).
-  Production wants a defined lifecycle: when to start, when to exit, reconnection
-  after a dropped/resumed RDP session, behavior across multiple monitors.
-- **Multiple concurrent RDP sessions / multiple `mstsc` windows** — supported or
-  explicitly out of scope? This ripples into A and B.
-- What happens when the mod isn't loaded but the plugin gets a signal (and vice
-  versa)? Graceful degradation, buffering, or drop?
-
-### E. Trust, security, distribution
-- The relay plugin is **the high-trust component** — it accepts data *from the
-  remote session* and acts on the client. Treat the remote as **semi-trusted input**:
-  strict bounds checking, no parsing that can be driven into a bad state by a hostile
-  remote.
-- **Code signing** the standalone EXE, and what review bar must be cleared before
-  anyone other than the author runs it.
-- Does out-of-process actually reduce the blast radius meaningfully, or just move it?
-
-### F. Taskbar widget UX (client side)
-- What does the widget *look like and do*? Overlay icon, thumbnail-toolbar button,
-  jump-list entry, a custom element? The sibling repo's existing thumbnail-toolbar /
-  button work is a reuse candidate — worth leaning on rather than inventing.
-
----
-
-## 8. Actuation roadmap (proposed order — challenge it)
-
-1. **GATING: live-test the probe on real hardware** (two machines, per the project's
-   TESTING procedure). Confirm `mstsc` activates the plugin and the signal arrives.
-   *Nothing else should be built until this is green* — a failure here can invalidate
-   the architecture, not just the code.
-2. **Prove the relay hop end-to-end with a trivial payload:** extend the (now
-   confirmed) plugin to forward a dummy signal to a stub client-side mod that does one
-   visible thing. This validates area **A** in isolation before any real feature.
-3. **Decide the actual feature / payload** (area **B/F**) — this is a product
-   decision and is currently the critical-path blocker. Everything concrete depends
-   on it.
-4. **Build remote-side detection** as a Windhawk mod (area **C**), folding in the
-   send side.
-5. **Build the client-side taskbar widget** (area **F**), reusing sibling-repo
-   patterns.
-6. **Harden:** lifecycle, reconnection, multi-session, input validation, signing
-   (areas **D/E**).
-
-Each numbered step is a natural "prove one thing, then proceed" boundary — the same
-philosophy that produced the probe.
-
----
-
-## 9. Constraints & conventions to respect
-
-- This repo runs a "RAIDEN" control-plane in `.raiden/`; mainline branch is **`main`**
-  (never `master`); commits **must not** include `Co-Authored-By` trailers; commit
-  only when explicitly asked.
-- Windows 11, personal-use-primarily. No admin should be required for the
-  client-side install (registration is HKCU) — preserve that property.
-- One-language / one-compiler stack (Windhawk's mingw clang, plain Win32 COM) — new
-  native pieces should stay compatible with it.
-
----
-
-## 10. Sharp questions for you (the agent) to put back to us early
-
-- **What exact remote state should the widget reflect?** (Undecided; blocks §7B and
-  §7F and roadmap step 3.)
-- **One session at a time, or multiple concurrent RDP sessions?** (Ripples through
-  §7A, §7B, §7D.)
-- **How fresh must the widget be** — instantaneous, or is a second of latency fine?
-  (Shapes protocol and detection strategy.)
-- **Who besides the author will ever run this?** (Sets the security/signing/review
-  bar in §7E.)
-- **Is the window-message relay a firm decision, or open to a pipe/shared-memory
-  alternative** if UIPI/integrity-level issues bite in §7A?
-
----
-
-*Glossary (in case it helps): **DVC** = RDP Dynamic Virtual Channel, a bidirectional
-data channel inside an RDP connection. **Windhawk** = a Windows mod platform that
-injects C++ mods into running processes. **`mstsc.exe`** = the Windows RDP client.
-**COM LocalServer** = a COM object served by a standalone `.exe` in its own process
-(vs. an in-process DLL). **`IWTSPlugin` / `WTSVirtualChannelOpenEx`** = the client
-plugin interface and the server-side channel-open API, respectively, for DVCs.*
+These commands build/check without installing the runtime. In restricted
+environments set process-local TEMP/TMP to a fresh ignored `out/` directory
+before clang. The [candidate builder](scripts/build-refinement-candidate.ps1)
+creates a separate ignored folder/ZIP; it does not run every regression check.
+Do not run the relay without arguments as a build check: it starts a COM server.
+Installation, registry changes and live reloads belong to the home procedure,
+with backups and an alternate connection path in place.

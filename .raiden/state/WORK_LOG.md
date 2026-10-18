@@ -708,3 +708,28 @@ change, and no `@compilerOptions` change.
   passed. Only CURRENT_STATE and this review record were changed. No runtime
   source, prerelease asset, registration, installed mod or RDP session change,
   and no new runtime test or RAIDEN doctor run, was performed.
+
+## 2026-10-17 — reconcile README, roadmap and developer handoff
+
+- Reviewed README.md, ROADMAP.md and HANDOFF.md against current sources,
+  D-41 through D-45, the reconciled loop ledger, acceptance/review guides and
+  published RC1 metadata. Replaced superseded candidate announcements and
+  pre-implementation brainstorming with current component roles, data paths,
+  versions, feedback/ambiguity behavior and development entry points.
+- Removed obsolete probe-first/unbuilt-component gates, legacy protocol and
+  detached-worker descriptions, stale baseline test gaps and the blanket claim
+  that the toolchain lacks C++/WinRT. Preserved provenance and linked historical
+  evidence rather than carrying old build narratives as current instructions.
+- README links the ZIP, standalone home guide, prerelease page and checksums.
+  All three documents distinguish local checks and the earlier verified baseline
+  from candidate home acceptance, and explain release-tag versus refreshed-asset
+  provenance. ROADMAP sequences candidate acceptance before deployment/installer
+  gates and separates deferred proposals from authorized implementation. Formal
+  loop dispositions remain in OPEN_LOOPS.
+- Verified 65 local links/anchors, four exact release URLs, component versions
+  and protocol against source, and parsed both PowerShell blocks without running
+  them. GitHub reports the release published, non-draft and prerelease, with
+  the same asset names, sizes and digests already recorded above.
+  `git diff --check` passed. Only the three requested documents and this dated
+  review record changed; no runtime source or prerelease asset was changed,
+  and no new runtime test, installation, registration or live reload occurred.

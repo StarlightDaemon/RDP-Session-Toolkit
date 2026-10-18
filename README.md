@@ -1,236 +1,151 @@
 # RDP Session Toolkit
 
+Personal-use RDP taskbar controls, diagnostics and recovery helpers for Windows 11.
+The toolkit puts controls in the connecting PC's taskbar and the remote session's
+taskbar, with a Dynamic Virtual Channel (DVC) relay between them.
+
 **Home-test download:** [Windows x64 candidate ZIP](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/RDP-Session-Toolkit-session-reliability-rc.1-windows-x64.zip).
-The ZIP includes the built relay, mod sources, and update/test/rollback guide;
-no relay rebuild is needed. See the
-[RC1 prerelease page](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/tag/session-reliability-rc.1)
-for release notes, the standalone guide, and checksums.
+Start with the [home update, test and rollback guide](HOME_UPDATE_TEST_ROLLBACK.md),
+also available as a [standalone release asset](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/HOME_UPDATE_TEST_ROLLBACK.md).
+The [RC1 prerelease page](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/tag/session-reliability-rc.1)
+has release notes and [asset checksums](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/SHA256SUMS.txt).
 
-**Diagnostics and session reliability candidate:** client 0.11.1, host 0.5.1
-and relay 0.3.1 add local diagnostics, action feedback and a conservative
-multiple-client guard, with owned workers, bounded relay logs and safer unload.
-Protocol v3 requires matching components and refuses legacy actions. See
-[candidate acceptance and rollback](TOP_THREE_ACCEPTANCE.md),
-[runtime regression checks](probes/runtime/README.md), and the
-[implementation plan](REFINEMENT_PLAN.md). This source is locally checked;
-installed-runtime acceptance remains separate.
-Use the [home update, test and rollback guide](HOME_UPDATE_TEST_ROLLBACK.md)
-for the step-by-step procedure on both machines; it is included in candidate ZIPs.
-The [implementation review](IMPLEMENTATION_REVIEW.md) describes the corrected
-bugs, security boundaries and remaining home-test gates.
+The ZIP includes the built relay, Windhawk mod sources, diagnostics, acceptance
+material and the guide. No relay rebuild is needed; Windhawk compiles the mod
+sources during installation. This is a manual, unsigned home-test candidate.
+Use independently installed Windhawk; toolkit setup must reuse it rather than
+install or upgrade it.
 
-Run `./scripts/Get-ToolkitDiagnostics.ps1` for a read-only local explanation,
-or add `-Json` for structured output. The script does not start or repair
-components, read secrets/clipboard contents, or upload anything.
+## Components and current candidate
 
-The registration-refinement notice below describes the preceding candidate.
+| Component | Version | Runs on |
+|---|---|---|
+| [Taskbar Client](taskbar-integration/client/rdp-session-toolkit-taskbar-client.wh.cpp) | 0.11.1 | Connecting PC: mstsc.exe and local explorer.exe |
+| [Taskbar Host](taskbar-integration/host/rdp-session-toolkit-taskbar-host.wh.cpp) | 0.5.1 | Remote session host: explorer.exe |
+| [DVC relay](dvc-plugin/relay/common/RelayIds.h) | 0.3.1 | Connecting PC: COM LocalServer activated by mstsc |
 
-**Refinement candidate available:** client 0.10.1 and relay 0.2.1 add coordinated
-path handling and safer registration/removal; host 0.4.0 is unchanged. This
-candidate has passed local checks but has not been live-tested. Follow the
-[refinement plan](REFINEMENT_PLAN.md) and [home-test checklist](HOME_TEST.md).
-The verified-runtime statements below describe the preceding component set.
+This candidate adds diagnostics, action feedback and conservative ambiguity
+refusal, with registration, worker, callback and relay-lifetime fixes. Use the
+matched components: protocol v3 refuses legacy actions without an unsafe fallback.
 
-**Status: working, personal-use toolkit.** The client and host taskbar widgets
-and the Dynamic Virtual Channel relay have been live-tested by the operator
-over several days, including the cross-machine control and status paths. The
-repository remains intentionally conservative about its trust boundary and is
-not yet packaged for general distribution.
+Local regression and compile/link checks passed; real two-machine, Explorer,
+visual and resource acceptance is still required. The operator's earlier live-use
+report applies to the preceding baseline, scoped in
+[D-41](.raiden/state/DECISIONS.md#d-41-operator-verification-closes-the-current-live-test-batch),
+not this candidate. See the [implementation review](IMPLEMENTATION_REVIEW.md)
+and [extended acceptance matrix](TOP_THREE_ACCEPTANCE.md).
 
-For a repository explanation, proposed mission, and sequenced feature plan, see
-[Repository review and proposed direction](REPOSITORY_REVIEW.md). The proposal
-keeps the taskbar controls central while allowing small session diagnostics and
-recovery utilities beyond the toolbar.
+The release tag identifies the implementation revision. Refreshed assets include
+the later guide/download-link revision; the ZIP manifest and dated
+[work log](.raiden/state/WORK_LOG.md) record provenance and verified checksums.
+Later repository documentation does not imply rebuilt release assets.
 
-[Packaging feasibility research](PACKAGING_RESEARCH.md) assesses a toolkit-only
-setup program that reuses a separately installed Windhawk, with reproducible
-probes, deployment findings, and the remaining validation gates.
+## Client taskbar controls
 
-## What this is
+One client mod targets mstsc.exe and local explorer.exe. Its primary presentation
+is an always-visible Windows 11 taskbar panel. The optional floating fullscreen
+overlay is off by default. The thumbnail toolbar and separate embedded-panel mod
+are retired.
 
-This is the companion repository to
+- **Status:** host name, client session/window state and an unresponsive-window
+  warning. Hover the text for this PC's keyboard/mouse idle time and connection
+  quality, bandwidth and round-trip time when mstsc reports them. Missing quality
+  data stays unknown; local idle time is not remote-session activity. There is no
+  session-duration clock.
+- **Minimize / Restore:** change the local RDP window without disconnecting.
+- **Fullscreen / windowed:** foregrounds the session and sends Remote Desktop's
+  Ctrl+Alt+Break shortcut. Failure or uncertainty is reported.
+- **Disconnect:** uses the RDP window's normal close path; the remote session
+  keeps running.
+- **Reconnect / Force reconnect:** opt-in and off by default. Reconnect reopens
+  the connection in the selected display mode. Force reconnect can end an
+  unresponsive client after a grace period. Every reconnect requires a click.
+
+Windhawk settings also offer connection-bar hiding, an optional disconnect hotkey,
+overlay positioning/fading and per-feature toggles.
+
+## Host taskbar controls
+
+The host mod embeds a widget in the remote session's Windows 11 taskbar. Windows
+Terminal Services (WTS) supplies that session's state and connecting client name.
+
+- **Minimize the client / Fullscreen toggle:** send commands through the DVC
+  relay. Replies and periodic queries return client state; unavailable or stale
+  state is shown as unknown.
+- **Disconnect:** detaches the current RDP session without signing it out.
+- **Restart Clipboard:** restarts verified System32 rdpclip.exe processes in
+  this session. This discards shared clipboard contents; feedback includes
+  failure or uncertainty.
+- **Clipboard helper not running:** reports absence. A running helper does not
+  prove copy/paste health, so the widget makes no health claim.
+
+Disconnect and clipboard recovery act locally on the host, are RDP-gated and
+remain independent of relay readiness.
+
+## Communication and trust
+
+The client's mstsc branch writes a versioned status snapshot in its mod storage.
+Its local Explorer panel reads it and sends bounded WM_COPYDATA commands back.
+The cross-machine path is **host widget → DVC → client COM relay → mstsc
+receiver**, with correlated replies read before closing the channel. The relay
+also reads the client snapshot for state replies. This carries controls and
+client state, not remote-app mirroring or arbitrary remote telemetry.
+
+Protocol v3 binds actions to process ID and creation time. Extra mstsc processes
+in the same Windows session, including unconnected dialogs, or multiple RDP
+frames in one process pause peer controls. There is no session chooser.
+Snapshots require valid fields, matching identity and freshness. Feedback
+separates acceptance from observed changes; uncertain actions are never retried
+automatically.
+
+This retains a personal-use, same-user trust boundary. The shared secret and
+sender-window/image checks do not authenticate against hostile same-user code;
+WM_COPYDATA's sender window is caller-controlled. See the
+[security and compatibility review](IMPLEMENTATION_REVIEW.md).
+
+## Update and diagnose
+
+Use the [home guide](HOME_UPDATE_TEST_ROLLBACK.md) for both machines' backups,
+update order, existing-path relay registration, tests and rollback. Load each
+mod through Windhawk's **New mod** editor using the appropriate source file;
+these mods are not published in its mod catalog. Taskbar panels require Windows
+11; the candidate targets Windows x64. The client source requires Windhawk 1.6
+or later. Do not register a second extracted relay copy or double-click its EXE:
+without arguments it starts a COM server.
+
+For a read-only local report, run from the repository or extracted bundle root:
+
+```powershell
+./scripts/Get-ToolkitDiagnostics.ps1
+./scripts/Get-ToolkitDiagnostics.ps1 -Json
+```
+
+Diagnostics omit endpoint names by default and do not collect command secrets,
+command lines, connection-file contents or clipboard contents. They neither
+repair components nor upload data. File/source presence does not prove loaded
+versions or successful taskbar injection.
+
+## Development and context
+
+- [Handoff](HANDOFF.md) and [roadmap](ROADMAP.md): source entry points and next work.
+- [Runtime checks](probes/runtime/README.md) and
+  [packaging probes](probes/packaging/README.md): verification and boundaries.
+- [Candidate builder](scripts/build-refinement-candidate.ps1): creates an ignored
+  bundle without installing or registering it.
+- [Current state](.raiden/state/CURRENT_STATE.md),
+  [loop ledger](.raiden/state/OPEN_LOOPS.md),
+  [decisions](.raiden/state/DECISIONS.md) and
+  [work log](.raiden/state/WORK_LOG.md): continuity and historical evidence.
+- [Repository review](REPOSITORY_REVIEW.md),
+  [ranked additions](BEST_NEXT_ADDITIONS.md) and
+  [packaging research](PACKAGING_RESEARCH.md): rationale and proposals.
+
+The client component began as a fork of
 [Hide RDP Connection Bar](https://github.com/StarlightDaemon/Hide-RDP-Connection-Bar),
-a small Windhawk mod that hides the RDP connection bar overlay. That repo is a simple,
-low-risk UI mod: it patches window behavior inside `mstsc.exe` and nothing else.
-
-This repository is a toolkit of components built around the same idea, aimed at a more
-ambitious, personal-use-primarily goal: a live taskbar widget on the client machine
-that reflects state from inside the remote RDP session, wired together over an RDP
-Dynamic Virtual Channel (DVC).
-
-This toolkit's client-side taskbar component specifically began as a fork of
-[Hide RDP Connection Bar](https://github.com/StarlightDaemon/Hide-RDP-Connection-Bar).
-That original mod still exists and continues to be independently maintained at its own
-repository, separate from this fork's ongoing changes.
-
-## Why a separate repository
-
-The two repos are split because they carry different trust levels, not just different
-feature sets. `Hide RDP Connection Bar` is a single UI mod with a narrow, easily-audited
-scope. This repository is where a **native standalone executable that registers as a COM
-server and can act on a live RDP session** lives — a much larger attack
-surface and a much higher bar for review before anyone other than the author should run
-it. Keeping it in its own repo keeps that distinction visible instead of quietly
-expanding the trust footprint of the original mod.
-
-## What works today: the client-side taskbar widget
-
-`taskbar-integration/client/rdp-session-toolkit-taskbar-client.wh.cpp` is a Windhawk mod that
-runs inside `mstsc.exe` (the Windows Remote Desktop client) on your local machine. It's
-a fork of Hide RDP Connection Bar, extended with session controls and a status panel that
-the mod embeds in your own taskbar (from `explorer.exe`). Everything it does is entirely
-local to the client machine. Its local controls work independently; with the relay
-installed, it also receives host-widget commands and publishes client state that
-the relay returns to the host.
-
-It compiles cleanly against the Windhawk toolchain and has been live-tested by the
-operator across the panel, overlay, session controls, and relay-backed host actions.
-
-### Installation
-
-1. Install [Windhawk](https://windhawk.net/) if you don't already have it.
-2. This mod isn't published to the Windhawk Marketplace yet, so you won't find it by
-   searching in the app. Instead, load it the same way this fleet's other unpublished
-   Windhawk mods are tested: open Windhawk, choose **New mod**, and paste in the entire
-   contents of
-   [`taskbar-integration/client/rdp-session-toolkit-taskbar-client.wh.cpp`](taskbar-integration/client/rdp-session-toolkit-taskbar-client.wh.cpp).
-3. Save and enable the mod. Open (or reopen, if one is already running) a Remote Desktop
-   connection to see it.
-
-### Usage
-
-Once enabled, a status panel appears in your own taskbar with session action
-buttons, each with a tooltip explaining what the click does. Reconnect is hidden
-by default and appears when enabled in settings. An optional
-floating on-screen button (off by default; corner and offset are configurable in the
-Windhawk mod settings) offers Minimize, Restore, and Disconnect on the RDP monitor
-itself. The controls are:
-
-- **Connection status and name display** — the button shows the remote host's name, so
-  you can tell at a glance which session it belongs to. It's a passive display, not a
-  click target.
-- **Minimize** — sends the fullscreen RDP session down to the taskbar without
-  disconnecting it.
-- **Restore** — brings a minimized session back. Works from the taskbar panel or from
-  the same on-screen button, which stays visible while minimized.
-- **Disconnect** — cleanly closes the RDP session, the same as closing the window
-  normally.
-- **Idle time** — a row on the on-screen button (fullscreen sessions) and the tooltip
-  of the taskbar panel's status text (all sessions) show how long *this computer's*
-  keyboard and mouse have been idle. That is deliberately local idle time, not
-  remote-session activity. (The session-duration clock that used to sit beside it was
-  removed at v0.10.0.)
-- **Connection quality** — the same tooltip carries the quality level Remote Desktop
-  itself reports (4 levels), with bandwidth and round-trip time. It says it is waiting
-  until the first report arrives, and says so plainly if none can come.
-- **Fullscreen / windowed** — one panel button switches the live session between
-  fullscreen and windowed without disconnecting, by sending Remote Desktop's own
-  Ctrl+Alt+Break shortcut to the session window.
-- **Reconnect** — cleanly disconnects and reopens the same connection in your preferred
-  display mode (fullscreen, windowed at a chosen or the current size, or all monitors),
-  configurable in the mod settings.
-- **Stuck-session alert** — if the session window stops responding for a configurable
-  number of seconds, a small alert appears offering **Force reconnect** (ends the stuck
-  client after a short grace period and reopens the connection). The mod never
-  reconnects on its own; every reconnect starts with your click.
-
-The mod also has other configurable options (hiding the native connection bar, an idle
-fade effect, a disconnect hotkey, per-feature toggles for everything above) — see the
-mod's own settings in Windhawk for the full list.
-
-### Primary presentation: a status panel in your own taskbar
-
-As of **v0.6.0** the client mod also targets `explorer.exe` on the *client* machine
-(a single Windhawk mod can target more than one process). When loaded there, its
-**explorer.exe branch** puts a wide, always-visible RDP status panel directly into the
-Windows 11 taskbar — the same taskbar-XAML injection technique the host-side widget
-below uses. The panel shows the remote host name over a state-and-protocol line
-("Active · RDP", or an honest "not responding" line) — the same two-line format the
-host widget uses — with idle time and connection quality in its tooltip, and five
-directly clickable buttons: Minimize / Restore / Fullscreen-toggle / Reconnect /
-Disconnect —
-for fullscreen and windowed sessions alike. It does nothing to the session on its own:
-it reads a status file the mstsc.exe branch writes once a second and sends its actions
-back over a local, secret-guarded message channel. Because both surfaces are now one
-mod id, the panel finds that status file directly (no sibling-directory guessing). To
-use only the taskbar panel, leave *Show floating overlay button* off (its default).
-See the verification record in
-[D-41](.raiden/state/DECISIONS.md#d-41-operator-verification-closes-the-current-live-test-batch).
-
-(This was previously a third, separate mod, `rdp-session-toolkit-taskbar-client-embedded`;
-it was folded into the client mod at v0.6.0 — see
-[`.raiden/state/DECISIONS.md`](.raiden/state/DECISIONS.md) D-26.)
-
-## What works today: the host-side taskbar widget
-
-`taskbar-integration/host/rdp-session-toolkit-taskbar-host.wh.cpp` is a second Windhawk
-mod that runs inside `explorer.exe` on the machine you connect *to* — the RDP session
-host. It injects a small widget directly into the Windows 11 taskbar of the remote
-session (using the native taskbar-XAML injection technique proven by the sibling
-[Native Taskbar Media Controller](https://github.com/StarlightDaemon/Native-Taskbar-Media-Controller)
-mod), showing:
-
-- **Connecting client name and connection state** — which machine is currently
-  attached to the session, and the session's live state (Active, Disconnected, …).
-- **Disconnect** — detaches the RDP client cleanly, same as the Start menu's
-  Disconnect; the session keeps running. The button disables itself when the session
-  is at the physical console, so it can't kick a locally-signed-in user.
-- **Minimize the client** — signals the connecting computer, over the toolkit's RDP
-  Dynamic Virtual Channel relay, to minimize its Remote Desktop window. The send now
-  reads the relay's reply back before closing the channel, which both confirms
-  delivery and fixed a race where the command could be dropped.
-- **Fullscreen / windowed toggle for the client** — switches the connecting
-  computer's Remote Desktop window between fullscreen and windowed over the same
-  relay. The relay's replies (and a lightweight every-few-seconds status query)
-  carry the client's current mode back, so the button labels its actual direction —
-  or says plainly that the state is unknown.
-- **Restart Clipboard** — kills and relaunches this session's `rdpclip.exe`, the
-  helper that carries copy-and-paste between your machine and the session, to fix
-  it when it wedges. It only ever touches a process in this session whose full
-  image path really is `%SystemRoot%\System32\rdpclip.exe`. **Restarting it
-  discards whatever is currently on the shared clipboard** — the button's tooltip
-  says so. Console-gated like Disconnect.
-- **Clipboard helper not running** — a line that appears when no clipboard helper
-  can be found in the session. When one *is* running the widget says nothing about
-  the clipboard at all: a helper that is running but wedged can't be told apart
-  from a healthy one, so it never claims the clipboard is fine.
-
-Disconnect and Restart Clipboard act entirely locally on the session host; Minimize
-and the fullscreen toggle are the toolkit's cross-machine pipe (host mod → DVC relay
-plugin → client mod), which also carries the client's state back to the host. Install
-it the same way as the client mod (Windhawk → **New mod** → paste the file contents),
-but on the session host.
-
-It compiles cleanly against the Windhawk toolchain and has been live-tested by the
-operator, including taskbar injection, RDP gating, clipboard recovery, and relay-backed
-client controls.
-
-## Cross-machine control
-
-The cross-machine pipe is live-proven: host mod → DVC relay plugin
-(`dvc-plugin/relay/`, a standalone out-of-process COM LocalServer the RDP client
-activates) → the client mod's relay receiver. As of host v0.4.0 / relay v0.2.0 the
-pipe is two-way per interaction: every command the host sends is answered by a small
-status reply carrying the client's session/fullscreen state, read back before the
-channel closes. The reply leg, fullscreen command, and host periodic state poll have
-also been live-tested. (`dvc-plugin/probe/` is the
-retired throwaway experiment that first proved the DVC activation mechanism; it is
-kept as reference only.)
-
-For the full target architecture, the reasoning behind these decisions, and current
-open questions, see [`HANDOFF.md`](HANDOFF.md) and
-[`.raiden/state/DECISIONS.md`](.raiden/state/DECISIONS.md) rather than duplicating that
-detail here.
-
-## Structure
-
-- [`taskbar-integration/`](taskbar-integration/README.md) — the two Windhawk mods:
-  the client-side mod (`client/`, targeting both `mstsc.exe` and — since v0.6.0 —
-  `explorer.exe` for the taskbar-embedded panel) and the host-side mod (`host/`),
-  both built, see above
-- [`dvc-plugin/`](dvc-plugin/README.md) — the standalone DVC relay executable
-  (`relay/`, the production plugin at v0.2.0) plus the retired activation probe
-  (`probe/`, kept as reference)
+which remains independently maintained. This repository keeps the broader
+taskbar/COM relay trust footprint separate from that narrow UI mod. The retired
+[DVC probe](dvc-plugin/probe/) remains reference material; its activation test is
+historical evidence, not an experiment still waiting to be run.
 
 ## License
 
