@@ -627,3 +627,35 @@ change, and no `@compilerOptions` change.
   can be recreated after pulling; the builder includes the guide. Runtime
   sources are unchanged from the reviewed/verified candidate. Live installation
   and acceptance remain separate under LOOP-011.
+
+## 2026-10-17 — published RC1 and refreshed prerelease asset checksums
+
+- Published [Session reliability RC1 — home-test candidate](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/tag/session-reliability-rc.1)
+  as a prerelease. The tag `session-reliability-rc.1` retains the original
+  implementation commit `181451220dd944da66b1096f20c621a81913bbd5`.
+- Refreshed the candidate ZIP, standalone home guide and release checksum file
+  from the clean documentation commit
+  `0ceee016ca623a9d082e4b791e6f6f668824585b`. The bundled and standalone guides
+  include the current download links and match that repository revision.
+  Runtime source inputs are unchanged from the reviewed implementation; the
+  ZIP build manifest records the refreshed source revision. Release notes
+  explain this asset refresh without moving the published tag.
+- Current downloadable assets and SHA-256 values, verified against GitHub's
+  published asset metadata and the freshly downloaded copies:
+
+  | Asset | Bytes | SHA-256 |
+  |---|---:|---|
+  | [RDP-Session-Toolkit-session-reliability-rc.1-windows-x64.zip](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/RDP-Session-Toolkit-session-reliability-rc.1-windows-x64.zip) | 458422 | `d408bf10a8822895555d0d311456a08dc7984f3913b39868c73b39385f185c9a` |
+  | [HOME_UPDATE_TEST_ROLLBACK.md](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/HOME_UPDATE_TEST_ROLLBACK.md) | 16889 | `c63daf4a73dcc779e4131a08b67c401281612a3aaf2f369b5381fd0361e93dac` |
+  | [SHA256SUMS.txt](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/SHA256SUMS.txt) | 222 | `b529ab821565c86fd77dbf2e3f0d15a0a5b7d08e250af1ad6c47774fec9a7336` |
+
+- The release checksum file covers the ZIP and standalone guide; the separate
+  checksum list inside the ZIP covers its 17 files. Verified the downloaded
+  ZIP's internal checksums and clean source manifest, plus byte equality of
+  both guide copies with the repository. Local refreshed assets and download
+  verification are retained under `out/prereleases/refresh-0ceee01/`; the
+  build is `out/candidates/session-reliability-20261017-230152-e76765.zip`.
+- Component versions remain client 0.11.1, host 0.5.1 and relay 0.3.1. The
+  relay is unsigned, and live two-machine/Explorer acceptance remains under
+  LOOP-011. No installed runtime, registration or active RDP session was
+  changed by publication or this documentation update.
