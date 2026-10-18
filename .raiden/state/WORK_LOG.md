@@ -758,3 +758,29 @@ change, and no `@compilerOptions` change.
   review record changed. No runtime source, release asset, installation,
   registration or live session changed; runtime tests were not rerun for this
   documentation-only update.
+
+## 2026-10-17 — reconcile the production relay README
+
+- Reviewed dvc-plugin/relay/README.md against relay entry points, registration,
+  callbacks, canonical runtime contracts, snapshot/identifier definitions,
+  regression fixtures and build script, plus the current acceptance ledger and
+  published RC1 metadata. Removed superseded registration-candidate notices,
+  raw-byte forwarding/status-reply instructions and the claim that production
+  lifetime still follows the probe.
+- Documented v3 request/reply and bound WM_COPYDATA behavior, conservative
+  process/frame/receiver refusal, snapshot validation, uncertain outcomes,
+  COM reference-based shutdown and bounded user-local logging. Preserved the
+  production identifiers, registration ownership/rollback and exit-code details,
+  with the sender-image check explicitly advisory against same-user code.
+- Linked RC1, ZIP, standalone guide and checksum assets. Scoped earlier live
+  evidence to D-41 and current acceptance to the existing ledger/matrix. Separated
+  source build commands from registration and rollback in the home guide;
+  documented CLI modes without executing registration or starting the server.
+  Release-tag/refreshed-asset provenance points to the manifest and existing log.
+- Verified 16 local links/anchors, four release URLs, component versions and
+  production IDs, protocol/snapshot claims, CLI behavior and log/lifetime test
+  coverage against source. Both PowerShell blocks parsed without execution;
+  `git diff --check` passed. GitHub reports the same published, non-draft RC1
+  prerelease and previously recorded asset metadata. Only this README and the
+  dated review record changed; no runtime source or release asset changed, and
+  no runtime tests, installation, registration, live reload or RDP action ran.
