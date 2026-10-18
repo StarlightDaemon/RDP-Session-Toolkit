@@ -659,3 +659,29 @@ change, and no `@compilerOptions` change.
   relay is unsigned, and live two-machine/Explorer acceptance remains under
   LOOP-011. No installed runtime, registration or active RDP session was
   changed by publication or this documentation update.
+
+## 2026-10-17 — review and reconcile the remaining loop-ledger changes
+
+- Reviewed the pending OPEN_LOOPS reconciliation and its snapshot against the
+  committed ledger, D-41/D-44/D-45, the September 6 verification entry, current
+  source and the implementation/acceptance guides. Historical closures agree
+  with the existing operator verification; no new live acceptance was inferred.
+- Preserved the snapshot byte-for-byte as the pre-reconciliation ledger from
+  commit `d0b6ec6587c47a28877e4b949be858ccf8353e98`:
+  `SNAPSHOTS/OPEN_LOOPS-before-ledger-reconciliation-2026-10-17.md`, SHA-256
+  `22ce660d9ef06a038aeccea8e3b9ab2dc5b2ae5908615e1bc2ca426fae8184c0`.
+  The current ledger explains its archival scope and original link base.
+- Corrected stale live-test wording in LOOP-003 and LOOP-006 and removed the
+  obsolete future-cleanup language from the source-fixed timed self-test in
+  LOOP-004. Aligned LOOP-010 with implemented refinement passes and remaining
+  deployment work; clarified the candidate-guard versus future-selector scope
+  of LOOP-002. LOOP-011 points to the step-by-step home guide and retains its
+  live acceptance boundary.
+- Verified preservation and uniqueness of all 11 numbered loop IDs and the
+  doctor-sweep entry, source/evidence consistency, and local links/anchors.
+  Existing baseline resolutions remain scoped to the operator-verified
+  historical component set. LOOP-002, LOOP-010 and LOOP-011 retain their current
+  verification/deployment work; see OPEN_LOOPS for authoritative dispositions.
+- Documentation/state changes only. No runtime sources, prerelease assets,
+  production registration, installed mods or RDP sessions were changed; no
+  new runtime test or RAIDEN doctor execution was performed.
