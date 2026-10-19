@@ -809,3 +809,27 @@ change, and no `@compilerOptions` change.
   non-draft RC1 prerelease with the recorded asset metadata. Only the two
   requested documents and this review record changed; no source or release
   asset changes, runtime tests, probe registration/cleanup or live RDP actions.
+
+## 2026-10-18 — scope HOME_TEST to the historical registration candidate
+
+- Reviewed HOME_TEST.md against the first-pass record in REFINEMENT_PLAN,
+  current registration/path handling, the current home guide and acceptance
+  ledger, and published RC1 metadata. Preserved the client 0.10.1 / relay 0.2.1 /
+  unchanged host 0.4.0 procedure, both original command examples and the original
+  expected-results table as historical candidate material.
+- Added prominent current guidance to the published RC1 page, ZIP, standalone
+  guide, checksums and HOME_UPDATE_TEST_ROLLBACK.md. Distinguished the matched
+  protocol-v3 components from the old host-retention instruction, and the
+  historical test plan from evidence of completed acceptance. Scoped the old
+  lingering-relay warning to its baseline and replaced stale later-pass wording
+  with the current guard/lifecycle scope and acceptance references.
+- Kept registration-only recovery distinct from the current two-machine guide
+  and installer readiness. Exact release/asset provenance stays in the manifest
+  and existing publication record; formal loop dispositions stay in OPEN_LOOPS.
+- Verified six local links, four release URLs and current versions against source
+  and published metadata. Both historical command blocks and the results table
+  are unchanged; both PowerShell blocks parsed without execution.
+  `git diff --check` passed. GitHub reports the same published, non-draft RC1
+  prerelease and recorded asset metadata. Only HOME_TEST and this review entry
+  changed; no runtime source or release asset changes, runtime tests,
+  installation, registration, mod reload or live RDP action occurred.

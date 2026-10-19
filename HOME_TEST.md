@@ -1,9 +1,48 @@
-# First refinement candidate: home-test checklist
+# First refinement candidate: historical home-test checklist
 
-Candidate: client **0.10.1**, relay **0.2.1**, host **0.4.0** (unchanged).
-This candidate changes registration and executable-path handling. It is built
-and locally checked, but its new runtime behavior is not yet verified in RDP.
-Keep the currently working installation until you have local access.
+This document preserves the registration-only candidate's manual test plan.
+For the published session-reliability candidate, start with
+[HOME_UPDATE_TEST_ROLLBACK.md](HOME_UPDATE_TEST_ROLLBACK.md).
+
+## Current toolkit guidance
+
+Use [Session reliability RC1](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/tag/session-reliability-rc.1)
+and the [Windows x64 candidate ZIP](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/RDP-Session-Toolkit-session-reliability-rc.1-windows-x64.zip).
+It includes the built relay, mod sources, diagnostics and the home guide; no
+relay rebuild is needed. The release also provides the
+[standalone home guide](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/HOME_UPDATE_TEST_ROLLBACK.md)
+and [asset checksums](https://github.com/StarlightDaemon/RDP-Session-Toolkit/releases/download/session-reliability-rc.1/SHA256SUMS.txt).
+
+RC1 uses matching **client 0.11.1, host 0.5.1 and relay 0.3.1** with protocol v3.
+Use the current home guide for both machines' backups, update order, testing and
+rollback, then [TOP_THREE_ACCEPTANCE.md](TOP_THREE_ACCEPTANCE.md) for the extended
+matrix. In particular, the historical instruction below to retain host 0.4.0
+does not apply to RC1. Neither the old component set nor this registration-only
+checklist validates the later protocol, ambiguity guard, feedback or lifetime work.
+
+RC1 is a manual, unsigned prerelease with local checks recorded and real home
+acceptance still required. The release tag identifies the implementation revision;
+refreshed assets include the later guide/download-link revision. Exact provenance
+and asset verification live in the manifest and dated
+[work log](.raiden/state/WORK_LOG.md). Current acceptance/deployment work is
+coordinated through LOOP-011/LOOP-002/LOOP-010 in
+[OPEN_LOOPS.md](.raiden/state/OPEN_LOOPS.md). Toolkit setup must reuse independently
+installed Windhawk (D-42).
+
+## Historical registration-candidate scope
+
+The first-pass candidate was **client 0.10.1, relay 0.2.1, host 0.4.0 unchanged**.
+It changed registration and executable-path handling while retaining the earlier
+host and transport. At preparation it was built and locally checked; the guide
+was a plan for home validation, not a record of completed live acceptance. Its
+bundle used the earlier `refinement-1-*` layout described in the historical
+pass-1 section of [REFINEMENT_PLAN.md](REFINEMENT_PLAN.md).
+
+The remaining steps and expected version/log values apply only to that older
+candidate. Do not apply this abbreviated update/rollback sequence to RC1 or mix
+its components with that set. Keep the working installation until local access
+and use the current home guide for today's update. No new live test is implied
+by this documentation review.
 
 ## Before changing anything at home
 
@@ -23,9 +62,9 @@ Keep the currently working installation until you have local access.
 3. Check the candidate's `SHA256SUMS.txt`. `build-manifest.json` records the
    source revision, working-tree status, compiler, and candidate versions.
    Hashes detect changes; this development build is unsigned.
-4. Close your RDP sessions on the client before replacing the relay. The current
-   relay may remain running after disconnection; if its file is still in use,
-   reboot locally and do the replacement before starting RDP again. Do not
+4. Close your RDP sessions on the client before replacing the relay. The earlier
+   baseline relay may remain running after disconnection; if its file is still
+   in use, reboot locally and do the replacement before starting RDP again. Do not
    force-stop a session you still depend on.
 
 ## Update order
@@ -67,8 +106,11 @@ Keep the currently working installation until you have local access.
 | Client logs | New initialization identifies 0.10.1; no relay image-path mismatch |
 | Legacy compatibility, before re-registering | Updated client still accepts the old relay's registration |
 
-Test one RDP session first. Multi-session routing and unload-during-work fixes
-are later passes; this candidate does not claim those limitations are resolved.
+Test one RDP session first. This first-pass candidate did not include ambiguity
+refusal or unload-during-work refinements. Later source implements conservative
+target refusal and lifecycle changes, not a multi-session chooser; use the
+current home guide and acceptance matrix to validate those changes. The
+historical checks above do not cover them.
 
 ## Removal and recovery checks (after the runtime check)
 
@@ -92,5 +134,7 @@ needed. If the new removal fails, resolve that error before changing versions.
 
 Record Windows builds, Windhawk version, candidate folder name, each check's
 result, and relevant errors (without clipboard contents or credentials). A
-passing home test validates pass 1; installer and newer-Windhawk validation
-remain separate in [REFINEMENT_PLAN.md](REFINEMENT_PLAN.md).
+passing run of these checks would provide evidence for that first-pass candidate
+only. It would not accept RC1 or establish installer readiness. The subsequent
+source/deployment sequence is in [REFINEMENT_PLAN.md](REFINEMENT_PLAN.md); use
+the current home guide for current results and rollback.
